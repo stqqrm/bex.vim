@@ -1,9 +1,16 @@
-" autoload/bex.vim - ID-tracked file browser engine
+" autoload/bex.vim - ID-tracked file browser engine (Free Cursor Layout)
 
 function! bex#Open(path) abort
-  let l:dir = empty(a:path) ? getcwd() : fnamemodify(a:path, ':p')
+  " If no path is given, fall back to the active file's directory. 
+  " If the current buffer has no file, use getcwd().
+  if empty(a:path)
+    let l:current_file_dir = expand('%:p:h')
+    let l:dir = empty(l:current_file_dir) ? getcwd() : l:current_file_dir
+  else
+    let l:dir = fnamemodify(a:path, ':p')
+  endif
   
-  " Fixed: Clean up trailing slashes only if it isn't the system root directory "/"
+  " Clean up trailing slashes only if it isn't the system root directory "/"
   if len(l:dir) > 1
     let l:dir = substitute(l:dir, '[/\\]$', '', '')
   endif
@@ -35,7 +42,7 @@ endfunction
 function! s:render() abort
   let l:save_cursor = getcurpos()
   
-  " Fixed: Prevent double-slashing "//" when rendering files inside the system root directory
+  " Prevent double-slashing "//" when rendering files inside the system root directory
   let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
   let l:all = glob(b:bex_dir . l:sep . '/*', 0, 1) + glob(b:bex_dir . l:sep . '/.[^.]*', 0, 1)
   let b:bex_snapshot = {}
