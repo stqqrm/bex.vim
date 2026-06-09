@@ -2,7 +2,11 @@
 
 function! bex#Open(path) abort
   let l:dir = empty(a:path) ? getcwd() : fnamemodify(a:path, ':p')
-  let l:dir = substitute(l:dir, '[/\\]$', '', '')
+  
+  " Fixed: Clean up trailing slashes only if it isn't the system root directory "/"
+  if len(l:dir) > 1
+    let l:dir = substitute(l:dir, '[/\\]$', '', '')
+  endif
   
   if !isdirectory(l:dir)
     echoerr 'bex: Absolute path directory not found: ' . l:dir
@@ -30,7 +34,10 @@ endfunction
 
 function! s:render() abort
   let l:save_cursor = getcurpos()
-  let l:all = glob(b:bex_dir . '/*', 0, 1) + glob(b:bex_dir . '/.[^.]*', 0, 1)
+  
+  " Fixed: Prevent double-slashing "//" when rendering files inside the system root directory
+  let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
+  let l:all = glob(b:bex_dir . l:sep . '/*', 0, 1) + glob(b:bex_dir . l:sep . '/.[^.]*', 0, 1)
   let b:bex_snapshot = {}
   
   let l:lines = []
@@ -93,6 +100,7 @@ endfunction
 function! s:apply_buffer_changes() abort
   let l:seen_ids = {}
   let l:errors = []
+  let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
 
   for l:line in getline(1, line('$'))
     let l:raw = trim(l:line)
@@ -108,27 +116,25 @@ function! s:apply_buffer_changes() abort
       if has_key(b:bex_snapshot, l:id)
         let l:snap = b:bex_snapshot[l:id]
         
-        " If name was entirely deleted but tracking ID was left behind, process as a deletion
         if empty(l:clean_name)
           unlet l:seen_ids[l:id]
           continue
         endif
 
         if l:snap.name !=# l:clean_name
-          let l:src = b:bex_dir . '/' . l:snap.name
-          let l:dst = b:bex_dir . '/' . l:clean_name
+          let l:src = b:bex_dir . l:sep . l:snap.name
+          let l:dst = b:bex_dir . l:sep . l:clean_name
           if rename(l:src, l:dst) != 0
             call add(l:errors, 'Rename failed: ' . l:snap.name . ' -> ' . l:clean_name)
           endif
         endif
       endif
     else
-      " Safely clean out malicious/accidental legacy prefixes on fresh additions
       let l:clean_name = substitute(l:raw, '^\(\/[0-9a-fA-F]\+\)\s\+', '', '')
       let l:clean_name = substitute(l:clean_name, '/$', '', '')
       
       if empty(l:clean_name) || l:clean_name =~# '^\/[0-9a-fA-F]\+$' | continue | endif
-      let l:target = b:bex_dir . '/' . l:clean_name
+      let l:target = b:bex_dir . l:sep . l:clean_name
       
       if l:raw =~# '/$'
         if !isdirectory(l:target) | call mkdir(l:target, 'p') | endif
