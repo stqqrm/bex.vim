@@ -6,10 +6,11 @@ A simple ID-tracked file browser for Vim. The name **bex** stands for **Better E
 
 ## Usage
 
-* Test 
+* Open explorer
 ```
-Hello World
+:Bex [path]
 ```
+
 ## Installation
 
 ### Via [vim-plug](https://github.com/junegunn/vim-plug)
