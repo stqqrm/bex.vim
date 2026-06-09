@@ -1,8 +1,7 @@
-" autoload/bex.vim - Minimalist ID-tracked file browser engine (All IDs Visible)
+" autoload/bex.vim - ID-tracked file browser engine
 
 function! bex#Open(path) abort
   let l:dir = empty(a:path) ? getcwd() : fnamemodify(a:path, ':p')
-  " Clean up trailing slashes
   let l:dir = substitute(l:dir, '[/\\]$', '', '')
   
   if !isdirectory(l:dir)
@@ -10,7 +9,6 @@ function! bex#Open(path) abort
     return
   endif
 
-  " Fullscreen switch inside the active window
   execute 'edit ' . fnameescape('bex://' . l:dir)
   
   setlocal buftype=acwrite
@@ -31,7 +29,7 @@ function! bex#Open(path) abort
 endfunction
 
 function! s:render() abort
-  " Grab all files, folder structures, and hidden dotfiles safely
+  let l:save_cursor = getcurpos()
   let l:all = glob(b:bex_dir . '/*', 0, 1) + glob(b:bex_dir . '/.[^.]*', 0, 1)
   let b:bex_snapshot = {}
   
@@ -43,12 +41,10 @@ function! s:render() abort
     if l:name ==# '.' || l:name ==# '..' || empty(l:name) | continue | endif
     
     let l:is_dir = isdirectory(l:p)
-    " Upgraded string representation to 4 bytes (8 hexadecimal characters)
-    let l:id = printf('ID:%08x ', l:idx)
+    let l:id = printf('/%08x ', l:idx)
     let l:display = l:name . (l:is_dir ? '/' : '')
     
     call add(l:lines, l:id . l:display)
-    " Cache snapshots natively mapped directly to the string ID key token
     let b:bex_snapshot[trim(l:id)] = { 'name': l:name, 'is_dir': l:is_dir, 'path': l:p }
     let l:idx += 1
   endfor
@@ -57,24 +53,21 @@ function! s:render() abort
   call setline(1, l:lines)
   setlocal nomodified
   
-  " Syntactically highlight the IDs, keeping them completely visible (no conceal)
   syntax clear
-  syntax match BexID /^ID:[0-9a-fA-F]\+\s/
-  
-  " Match any item ending with a slash as a directory (including hidden ones)
+  syntax match BexID /^\/[0-9a-fA-F]\+\s/
   syntax match BexDir /[^/]\+\/$/
-  
-  " Match hidden flat files only (do not end with a slash)
-  syntax match BexHidden /ID:[0-9a-fA-F]\+\s\+\.[^/]\+$/
+  syntax match BexHidden /\v^\/[0-9a-fA-F]+\s+\.[^/]+$/
   
   highlight default BexID     guifg=#555555          ctermfg=239
   highlight default BexDir    guifg=#6fb3d2 gui=bold ctermfg=74 cterm=bold
   highlight default BexHidden guifg=#777777          ctermfg=243
+
+  call setpos('.', l:save_cursor)
 endfunction
 
 function! bex#OnSelect() abort
   let l:line = getline('.')
-  let l:match = matchlist(l:line, '^\(ID:[0-9a-fA-F]\+\)\s\+.*$')
+  let l:match = matchlist(l:line, '^\(\/[0-9a-fA-F]\+\)\s\+.*$')
   if empty(l:match) | return | endif
   
   let l:id = l:match[1]
@@ -101,19 +94,26 @@ function! s:apply_buffer_changes() abort
   let l:seen_ids = {}
   let l:errors = []
 
-  " Phase 1: Mutation Loop — Evaluates Renames and In-line Created items
   for l:line in getline(1, line('$'))
     let l:raw = trim(l:line)
     if empty(l:raw) | continue | endif
 
-    let l:match = matchlist(l:raw, '^\(ID:[0-9a-fA-F]\+\)\s\+\(.*\)$')
-    if !empty(l:match)
+    let l:match = matchlist(l:raw, '^\(\/[0-9a-fA-F]\+\)\s\+\(.*\)$')
+    
+    if !empty(l:match) && !has_key(l:seen_ids, l:match[1])
       let l:id = l:match[1]
       let l:clean_name = substitute(l:match[2], '/$', '', '')
       let l:seen_ids[l:id] = 1
 
       if has_key(b:bex_snapshot, l:id)
         let l:snap = b:bex_snapshot[l:id]
+        
+        " If name was entirely deleted but tracking ID was left behind, process as a deletion
+        if empty(l:clean_name)
+          unlet l:seen_ids[l:id]
+          continue
+        endif
+
         if l:snap.name !=# l:clean_name
           let l:src = b:bex_dir . '/' . l:snap.name
           let l:dst = b:bex_dir . '/' . l:clean_name
@@ -123,9 +123,13 @@ function! s:apply_buffer_changes() abort
         endif
       endif
     else
-      " A plain line without an explicit tracker ID -> brand new creation target
-      let l:clean_name = substitute(l:raw, '/$', '', '')
+      " Safely clean out malicious/accidental legacy prefixes on fresh additions
+      let l:clean_name = substitute(l:raw, '^\(\/[0-9a-fA-F]\+\)\s\+', '', '')
+      let l:clean_name = substitute(l:clean_name, '/$', '', '')
+      
+      if empty(l:clean_name) || l:clean_name =~# '^\/[0-9a-fA-F]\+$' | continue | endif
       let l:target = b:bex_dir . '/' . l:clean_name
+      
       if l:raw =~# '/$'
         if !isdirectory(l:target) | call mkdir(l:target, 'p') | endif
       else
@@ -134,7 +138,6 @@ function! s:apply_buffer_changes() abort
     endif
   endfor
 
-  " Phase 2: Compute Missing Tracker IDs for Delayed Batch Deletions
   let l:del_paths = []
   let l:del_names = []
   for [l:id, l:snap] in items(b:bex_snapshot)
