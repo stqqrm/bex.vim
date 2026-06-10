@@ -38,47 +38,102 @@ function! bex#Open(path) abort
 		autocmd BufWriteCmd <buffer> call s:apply_buffer_changes()
 		autocmd BufLeave    <buffer> call s:apply_buffer_changes()
 		autocmd QuitPre     <buffer> call s:apply_buffer_changes()
+		autocmd TextChanged  <buffer> call s:reapply_props()
+		autocmd TextChangedI <buffer> call s:reapply_props()
 	augroup ENDendfunction
 endfunction
 
-function! s:render() abort
-  let l:save_cursor = getcurpos()
-  
-  " Prevent double-slashing "//" when rendering files inside the system root directory
-  let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
-  let l:all = glob(b:bex_dir . l:sep . '*', 0, 1) + glob(b:bex_dir . l:sep . '.[^.]*', 0, 1)
-  let b:bex_snapshot = {}
-  
-  let l:lines = []
-  let l:idx = 0
-  
-  for l:p in l:all
-    let l:name = fnamemodify(l:p, ':t')
-    if l:name ==# '.' || l:name ==# '..' || empty(l:name) | continue | endif
-    
-    let l:is_dir = isdirectory(l:p)
-    let l:id = printf('/%08x ', l:idx)
-    let l:display = l:name . (l:is_dir ? '/' : '')
-    
-    call add(l:lines, l:id . l:display)
-    let b:bex_snapshot[trim(l:id)] = { 'name': l:name, 'is_dir': l:is_dir, 'path': l:p }
-    let l:idx += 1
+function! s:relative_time(ftime) abort
+  let l:diff = localtime() - a:ftime
+  if l:diff < 60 | return l:diff . 's ago'
+  elseif l:diff < 3600 | return (l:diff / 60) . 'm ago'
+  elseif l:diff < 86400 | return (l:diff / 3600) . 'h ago'
+  elseif l:diff < 604800 | return (l:diff / 86400) . 'd ago'
+  elseif l:diff < 2419200 | return (l:diff / 604800) . 'w ago'
+  elseif l:diff < 29030400 | return (l:diff / 2419200) . 'mo ago'
+  else | return (l:diff / 29030400) . 'y ago'
+  endif
+endfunction
+
+function! s:human_size(size) abort
+  if a:size < 1024 | return a:size . 'B'
+  elseif a:size < 1048576 | return (a:size / 1024) . 'KB'
+  elseif a:size < 1073741824 | return (a:size / 1048576) . 'MB'
+  elseif a:size < 1099511627776 | return (a:size / 1073741824) . 'GB'
+  else | return (a:size / 1099511627776) . 'TB'
+  endif
+endfunction
+
+function! s:reapply_props() abort
+  call prop_clear(1, line('$'))
+  for l:lnum in range(1, line('$'))
+    let l:line = getline(l:lnum)
+    let l:id = matchstr(l:line, '^\/[0-9a-fA-F]\{8}')
+    if empty(l:id) | continue | endif
+    if !has_key(b:bex_snapshot, l:id) | continue | endif
+    let l:item = b:bex_snapshot[l:id]
+    let l:perm = getfperm(l:item.path)
+    let l:size = getfsize(l:item.path)
+    let l:info = printf('  %s  %s  %s', l:perm, s:human_size(l:size), s:relative_time(getftime(l:item.path)))
+    call prop_add(l:lnum, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
   endfor
+endfunction
 
-  silent %delete _
-  call setline(1, l:lines)
-  setlocal nomodified
+function! s:render() abort
+	let l:save_cursor = getcurpos()
   
-  syntax clear
-  syntax match BexID /^\/[0-9a-fA-F]\+\s/
-  syntax match BexDir /[^/]\+\/$/
-  syntax match BexHidden /\v^\/[0-9a-fA-F]+\s+\.[^/]+$/
+	" Prevent double-slashing "//" when rendering files inside the system root directory
+	let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
+	let l:all = glob(b:bex_dir . l:sep . '*', 0, 1) + glob(b:bex_dir . l:sep . '.[^.]*', 0, 1)
+	let b:bex_snapshot = {}
   
-  highlight default BexID     guifg=#555555          ctermfg=239
-  highlight default BexDir    guifg=#6fb3d2 gui=bold ctermfg=74 cterm=bold
-  highlight default BexHidden guifg=#777777          ctermfg=243
+	let l:lines = []
+	let l:idx = 0
+  
+	for l:p in l:all
+		let l:name = fnamemodify(l:p, ':t')
+		if l:name ==# '.' || l:name ==# '..' || empty(l:name) | continue | endif
+    
+		let l:is_dir = isdirectory(l:p)
+		let l:id = printf('/%08x ', l:idx)
+		let l:display = l:name . (l:is_dir ? '/' : '')
+    
+		call add(l:lines, l:id . l:display)
+		let b:bex_snapshot[trim(l:id)] = { 'name': l:name, 'is_dir': l:is_dir, 'path': l:p }
+		let l:idx += 1
+	endfor
 
-  call setpos('.', l:save_cursor)
+	silent %delete _
+	call setline(1, l:lines)
+	setlocal nomodified
+
+	call prop_clear(1, line('$'))
+	if empty(prop_type_get('bex_info'))
+		call prop_type_add('bex_info', {'highlight': 'Comment'})
+	endif
+
+	let l:idx = 0
+	for l:p in l:all
+		let l:name = fnamemodify(l:p, ':t')
+		if l:name ==# '.' || l:name ==# '..' || empty(l:name) | continue | endif
+
+		let l:perm = getfperm(l:p)
+		let l:size = getfsize(l:p)
+		let l:info = printf('  %-12s  %-8s  %s', l:perm, s:human_size(l:size), s:relative_time(getftime(l:p)))
+		call prop_add(l:idx + 1, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
+		let l:idx += 1
+	endfor
+  
+	syntax clear
+	syntax match BexID /^\/[0-9a-fA-F]\+\s/
+	syntax match BexDir /[^/]\+\/$/
+	syntax match BexHidden /\v^\/[0-9a-fA-F]+\s+\.[^/]+$/
+  
+	highlight default BexID     guifg=#555555          ctermfg=239
+	highlight default BexDir    guifg=#6fb3d2 gui=bold ctermfg=74 cterm=bold
+	highlight default BexHidden guifg=#777777          ctermfg=243
+
+	call setpos('.', l:save_cursor)
 endfunction
 
 function! bex#OnSelect() abort
