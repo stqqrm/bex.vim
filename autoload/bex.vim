@@ -1,43 +1,43 @@
 " autoload/bex.vim - ID-tracked file browser engine (Free Cursor Layout)
 
 function! bex#Open(path) abort
-  " If no path is given, fall back to the active file's directory. 
-  " If the current buffer has no file, use getcwd().
-  if empty(a:path)
-    let l:current_file_dir = expand('%:p:h')
-    let l:dir = empty(l:current_file_dir) ? getcwd() : l:current_file_dir
-  else
-    let l:dir = fnamemodify(a:path, ':p')
-  endif
+	" If no path is given, fall back to the active file's directory. 
+	" If the current buffer has no file, use getcwd().
+	if empty(a:path)
+		let l:current_file_dir = expand('%:p:h')
+		let l:dir = empty(l:current_file_dir) ? getcwd() : l:current_file_dir
+	else
+		let l:dir = fnamemodify(a:path, ':p')
+	endif
   
-  " Clean up trailing slashes only if it isn't the system root directory "/"
-  if len(l:dir) > 1
-    let l:dir = substitute(l:dir, '[/\\]$', '', '')
-  endif
+	" Clean up trailing slashes only if it isn't the system root directory "/"
+	if len(l:dir) > 1
+		let l:dir = substitute(l:dir, '[/\\]$', '', '')
+	endif
   
-  if !isdirectory(l:dir)
-    echoerr 'bex: Absolute path directory not found: ' . l:dir
-    return
-  endif
+	if !isdirectory(l:dir)
+		echoerr 'bex: Absolute path directory not found: ' . l:dir
+		return
+	endif
 
-  execute 'edit ' . fnameescape('bex://' . l:dir)
+	execute 'edit ' . fnameescape('bex://' . l:dir)
   
-  setlocal buftype=acwrite
-  setlocal bufhidden=wipe
-  setlocal noswapfile
-  setlocal nobuflisted
-  setlocal filetype=bex
-  setlocal nonumber norelativenumber
-  setlocal nowrap
+	setlocal buftype=acwrite
+	setlocal bufhidden=wipe
+	setlocal noswapfile
+  	setlocal nobuflisted
+  	setlocal filetype=bex
+  	setlocal nonumber norelativenumber
+  	setlocal nowrap
 
-  let b:bex_dir = l:dir
-  call s:render()
+	let b:bex_dir = l:dir
+	call s:render()
 
   	augroup bex_events
 		autocmd! * <buffer>
 		autocmd BufWriteCmd <buffer> call s:apply_buffer_changes()
-		autocmd BufLeave    <buffer> call s:apply_buffer_changes()
-		autocmd QuitPre     <buffer> call s:apply_buffer_changes()
+		autocmd BufLeave     <buffer> call s:confirm_unsaved()
+		autocmd QuitPre      <buffer> call s:confirm_unsaved()
 		autocmd TextChanged  <buffer> call s:reapply_props()
 		autocmd TextChangedI <buffer> call s:reapply_props()
 	augroup ENDendfunction
@@ -65,18 +65,18 @@ function! s:human_size(size) abort
 endfunction
 
 function! s:reapply_props() abort
-  call prop_clear(1, line('$'))
-  for l:lnum in range(1, line('$'))
-    let l:line = getline(l:lnum)
-    let l:id = matchstr(l:line, '^\/[0-9a-fA-F]\{8}')
-    if empty(l:id) | continue | endif
-    if !has_key(b:bex_snapshot, l:id) | continue | endif
-    let l:item = b:bex_snapshot[l:id]
-    let l:perm = getfperm(l:item.path)
-    let l:size = getfsize(l:item.path)
-    let l:info = printf('  %s  %s  %s', l:perm, s:human_size(l:size), s:relative_time(getftime(l:item.path)))
-    call prop_add(l:lnum, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
-  endfor
+	call prop_clear(1, line('$'))
+	for l:lnum in range(1, line('$'))
+		let l:line = getline(l:lnum)
+		let l:id = matchstr(l:line, '^\/[0-9a-fA-F]\{8}')
+		if empty(l:id) | continue | endif
+		if !has_key(b:bex_snapshot, l:id) | continue | endif
+		let l:item = b:bex_snapshot[l:id]
+		let l:perm = getfperm(l:item.path)
+		let l:size = getfsize(l:item.path)
+		let l:info = printf('  %s  %s  %s', l:perm, s:human_size(l:size), s:relative_time(getftime(l:item.path)))
+	   	call prop_add(l:lnum, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
+	endfor
 endfunction
 
 function! s:render() abort
@@ -136,6 +136,17 @@ function! s:render() abort
 	call setpos('.', l:save_cursor)
 endfunction
 
+function! s:confirm_unsaved() abort
+	if &modified
+		let l:ans = input('bex: Unsaved changes, apply them? [y/N]: ')
+		if l:ans ==# 'y' || l:ans ==# 'Y'
+			call s:apply_buffer_changes()
+		else
+			setlocal nomodified
+		endif
+	endif
+endfunction
+
 function! bex#OnSelect() abort
 	let l:line = getline('.')
 	let l:match = matchlist(l:line, '^\(\/[0-9a-fA-F]\+\)\s\+\(.*\)$')
@@ -145,7 +156,7 @@ function! bex#OnSelect() abort
 	if !has_key(b:bex_snapshot, l:id) | return | endif
 	let l:item = b:bex_snapshot[l:id]
 
-	call s:apply_buffer_changes()
+	call s:confirm_unsaved()
 
 	if l:item.is_dir
 		call bex#Open(l:item.path)
@@ -153,13 +164,14 @@ function! bex#OnSelect() abort
 		execute 'edit ' . fnameescape(l:item.path)
 	endif
 endfunction
+
 function! bex#GoUp() abort
-  let l:parent = fnamemodify(b:bex_dir, ':h')
-  if l:parent ==# b:bex_dir
-    echo 'bex: Already at root directory'
-    return
-  endif
-  call bex#Open(l:parent)
+	let l:parent = fnamemodify(b:bex_dir, ':h')
+	if l:parent ==# b:bex_dir
+		echo 'bex: Already at root directory'
+		return
+	endif
+	call bex#Open(l:parent)
 endfunction
 
 function! s:apply_buffer_changes() abort
