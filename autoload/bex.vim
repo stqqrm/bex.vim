@@ -140,14 +140,16 @@ function! s:render() abort
 	endfor
   
 	syntax clear
-	syntax match BexID /^\/[0-9a-fA-F]\+\s/
-	syntax match BexDir /[^/]\+\/$/
-	syntax match BexHidden /\v^\/[0-9a-fA-F]+\s+\.[^/]+$/
-  
-	highlight default BexID     guifg=#555555          ctermfg=239
-	highlight default BexDir    guifg=#6fb3d2 gui=bold ctermfg=74 cterm=bold
-	highlight default BexHidden guifg=#777777          ctermfg=243
-
+	syntax match BexID /^\/[0-9a-fA-F]\+\ze\s/
+	syntax match BexDir        /\zs\S\+\/$/
+	syntax match BexHiddenDir  /\zs\.[^/]*\/$/
+	"syntax match BexHidden     /\zs\.[^/]*$/
+	syntax match BexHidden /\%(^\s*\|\s\)\zs\.[^/]\+$/
+	highlight BexID guifg=#555555 ctermfg=239
+	highlight BexDir ctermfg=Blue cterm=bold
+	highlight BexHiddenDir guifg=#4a8fa8 gui=bold ctermfg=67 cterm=bold
+	highlight default BexHidden guifg=#888888 ctermfg=244
+	
 	call setpos('.', l:save_cursor)
 endfunction
 
