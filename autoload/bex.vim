@@ -74,7 +74,7 @@ function! s:reapply_props() abort
 		let l:item = b:bex_snapshot[l:id]
 		let l:perm = getfperm(l:item.path)
 		let l:size = getfsize(l:item.path)
-		let l:info = printf('  %s  %s  %s', l:perm, s:human_size(l:size), s:relative_time(getftime(l:item.path)))
+		let l:info = printf('%-10s %8s %10s', l:perm, s:human_size(l:size), s:relative_time(getftime(l:item.path)))
 	   	call prop_add(l:lnum, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
 	endfor
 endfunction
@@ -108,8 +108,9 @@ function! s:render() abort
 	setlocal nomodified
 
 	call prop_clear(1, line('$'))
+	highlight BexInfo guifg=#555555 ctermfg=239
 	if empty(prop_type_get('bex_info'))
-		call prop_type_add('bex_info', {'highlight': 'Comment'})
+		call prop_type_add('bex_info', {'highlight': 'BexInfo'})
 	endif
 
 	let l:idx = 0
@@ -119,7 +120,7 @@ function! s:render() abort
 
 		let l:perm = getfperm(l:p)
 		let l:size = getfsize(l:p)
-		let l:info = printf('  %-12s  %-8s  %s', l:perm, s:human_size(l:size), s:relative_time(getftime(l:p)))
+		let l:info = printf('%-10s %8s %10s', l:perm, s:human_size(l:size), s:relative_time(getftime(l:p)))
 		call prop_add(l:idx + 1, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
 		let l:idx += 1
 	endfor
