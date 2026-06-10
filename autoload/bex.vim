@@ -44,24 +44,24 @@ function! bex#Open(path) abort
 endfunction
 
 function! s:relative_time(ftime) abort
-  let l:diff = localtime() - a:ftime
-  if l:diff < 60 | return l:diff . 's ago'
-  elseif l:diff < 3600 | return (l:diff / 60) . 'm ago'
-  elseif l:diff < 86400 | return (l:diff / 3600) . 'h ago'
-  elseif l:diff < 604800 | return (l:diff / 86400) . 'd ago'
-  elseif l:diff < 2419200 | return (l:diff / 604800) . 'w ago'
-  elseif l:diff < 29030400 | return (l:diff / 2419200) . 'mo ago'
-  else | return (l:diff / 29030400) . 'y ago'
-  endif
+	let l:diff = localtime() - a:ftime
+	if l:diff < 60 | return l:diff . 's ago'
+	elseif l:diff < 3600 | return (l:diff / 60) . 'm ago'
+	elseif l:diff < 86400 | return (l:diff / 3600) . 'h ago'
+	elseif l:diff < 604800 | return (l:diff / 86400) . 'd ago'
+	elseif l:diff < 2419200 | return (l:diff / 604800) . 'w ago'
+	elseif l:diff < 29030400 | return (l:diff / 2419200) . 'mo ago'
+	else | return (l:diff / 29030400) . 'y ago'
+	endif
 endfunction
 
 function! s:human_size(size) abort
-  if a:size < 1024 | return a:size . 'B'
-  elseif a:size < 1048576 | return (a:size / 1024) . 'KB'
-  elseif a:size < 1073741824 | return (a:size / 1048576) . 'MB'
-  elseif a:size < 1099511627776 | return (a:size / 1073741824) . 'GB'
-  else | return (a:size / 1099511627776) . 'TB'
-  endif
+	if a:size < 1024 | return a:size . 'B'
+	elseif a:size < 1048576 | return (a:size / 1024) . 'KB'
+	elseif a:size < 1073741824 | return (a:size / 1048576) . 'MB'
+	elseif a:size < 1099511627776 | return (a:size / 1073741824) . 'GB'
+	else | return (a:size / 1099511627776) . 'TB'
+	endif
 endfunction
 
 function! s:reapply_props() abort
@@ -257,6 +257,18 @@ function! s:apply_buffer_changes() abort
 			break
 		endif
 		call add(l:seen, l:name)
+	endfor
+
+	" Check new entries don't already exist on disk
+	let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
+	for l:entry in l:entries_buffer
+		let l:name = substitute(l:entry, '/$', '', '')
+		let l:path = b:bex_dir . l:sep . l:name
+		if filereadable(l:path) || isdirectory(l:path)
+			let l:throw_error = v:true
+			let l:err = 'bex: Already exists: ' . l:name
+			break
+		endif
 	endfor
 
 	if l:throw_error
