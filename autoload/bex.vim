@@ -20,7 +20,11 @@ function! bex#Open(path) abort
 		return
 	endif
 
-	execute 'edit ' . fnameescape('bex://' . l:dir)
+	if &modified
+		execute 'split ' . fnameescape('bex://' . l:dir)
+	else
+		execute 'edit ' . fnameescape('bex://' . l:dir)
+	endif
   
 	setlocal buftype=acwrite
 	setlocal bufhidden=wipe
