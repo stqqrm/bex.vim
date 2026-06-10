@@ -31,6 +31,10 @@ function! bex#Open(path) abort
   	setlocal nowrap
 
 	let b:bex_dir = l:dir
+	if !exists('g:bex_show_hidden')
+		let g:bex_show_hidden = 0
+	endif
+	nnoremap <buffer> . :let g:bex_show_hidden = !g:bex_show_hidden <bar> call <SID>render()<CR>
 	call s:render()
 
   	augroup bex_events
@@ -84,7 +88,13 @@ function! s:render() abort
   
 	" Prevent double-slashing "//" when rendering files inside the system root directory
 	let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
-	let l:all = glob(b:bex_dir . l:sep . '*', 0, 1) + glob(b:bex_dir . l:sep . '.[^.]*', 0, 1)
+	
+	let l:all = glob(b:bex_dir . l:sep . '*', 0, 1)
+	if g:bex_show_hidden
+		let l:all += glob(b:bex_dir . l:sep . '.[^.]*', 0, 1)
+	endif
+	
+	
 	let b:bex_snapshot = {}
   
 	let l:lines = []
