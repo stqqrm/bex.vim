@@ -149,7 +149,7 @@ function! s:render() abort
 	highlight BexID guifg=#555555 ctermfg=239
 	highlight BexDir ctermfg=Blue cterm=bold
 	highlight BexHiddenDir ctermfg=Blue cterm=bold
-	highlight default BexHiddenFile ctermfg=White
+	highlight BexHiddenFile ctermfg=White
 
 	call setpos('.', l:save_cursor)
 endfunction
