@@ -33,10 +33,12 @@ function! bex#Open(path) abort
   let b:bex_dir = l:dir
   call s:render()
 
-  augroup bex_events
-    autocmd! * <buffer>
-    autocmd BufWriteCmd <buffer> call s:apply_buffer_changes()
-  augroup END
+  	augroup bex_events
+		autocmd! * <buffer>
+		autocmd BufWriteCmd <buffer> call s:apply_buffer_changes()
+		autocmd BufLeave    <buffer> call s:apply_buffer_changes()
+		autocmd QuitPre     <buffer> call s:apply_buffer_changes()
+	augroup ENDendfunction
 endfunction
 
 function! s:render() abort
@@ -80,21 +82,22 @@ function! s:render() abort
 endfunction
 
 function! bex#OnSelect() abort
-  let l:line = getline('.')
-  let l:match = matchlist(l:line, '^\(\/[0-9a-fA-F]\+\)\s\+.*$')
-  if empty(l:match) | return | endif
-  
-  let l:id = l:match[1]
-  if has_key(b:bex_snapshot, l:id)
-    let l:item = b:bex_snapshot[l:id]
-    if l:item.is_dir
-      call bex#Open(l:item.path)
-    else
-      execute 'edit ' . fnameescape(l:item.path)
-    endif
-  endif
-endfunction
+	let l:line = getline('.')
+	let l:match = matchlist(l:line, '^\(\/[0-9a-fA-F]\+\)\s\+\(.*\)$')
+	if empty(l:match) | return | endif
 
+	let l:id = l:match[1]
+	if !has_key(b:bex_snapshot, l:id) | return | endif
+	let l:item = b:bex_snapshot[l:id]
+
+	call s:apply_buffer_changes()
+
+	if l:item.is_dir
+		call bex#Open(l:item.path)
+	else
+		execute 'edit ' . fnameescape(l:item.path)
+	endif
+endfunction
 function! bex#GoUp() abort
   let l:parent = fnamemodify(b:bex_dir, ':h')
   if l:parent ==# b:bex_dir
@@ -105,6 +108,8 @@ function! bex#GoUp() abort
 endfunction
 
 function! s:apply_buffer_changes() abort
+	setlocal nomodified
+
 	let l:throw_error = v:false
 	let l:err = ""
 
