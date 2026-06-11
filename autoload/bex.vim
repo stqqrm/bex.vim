@@ -188,6 +188,12 @@ function! s:confirm_unsaved(ask) abort
 		return
 	endif
 
+	if empty(l:plan.del_buffer) && empty(l:plan.rename_buffer) && empty(l:plan.entries_buffer)
+		setlocal nomodified
+		let b:bex_confirming = 0
+		return
+	endif
+
 	if !empty(l:plan.del_buffer)
 		let l:home = expand('$HOME')
 		echo 'bex: Files to delete:'
