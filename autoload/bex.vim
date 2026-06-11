@@ -1,5 +1,10 @@
 " autoload/bex.vim - ID-tracked file browser engine (Free Cursor Layout)
 
+function! bex#ToggleHidden() abort
+    let g:bex_show_hidden = !g:bex_show_hidden
+    call s:render()
+endfunction
+
 function! bex#Open(path) abort
 	" If no path is given, fall back to the active file's directory. 
 	" If the current buffer has no file, use getcwd().
@@ -38,7 +43,9 @@ function! bex#Open(path) abort
 	if !exists('g:bex_show_hidden')
 		let g:bex_show_hidden = 0
 	endif
-	nnoremap <buffer> . :let g:bex_show_hidden = !g:bex_show_hidden <bar> call <SID>render()<CR>
+	
+	nnoremap <buffer> <silent> . :call bex#ToggleHidden()<CR>
+	
 	call s:render()
 
 	augroup bex_events
@@ -129,7 +136,7 @@ function! s:render_header() abort
 	let l:right = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
 	call prop_add(1, 0, {
 		\ 'type': 'bex_header',
-		\ 'text': l:left . "\n",
+		\ 'text': l:left,
 		\ 'text_padding_left': 0,
 	\ })
 	call prop_add(1, 0, {
