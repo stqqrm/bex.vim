@@ -29,10 +29,10 @@ function! bex#Open(path) abort
 	setlocal buftype=acwrite
 	setlocal bufhidden=wipe
 	setlocal noswapfile
-  	setlocal nobuflisted
-  	setlocal filetype=bex
-  	setlocal nonumber norelativenumber
-  	setlocal nowrap
+	setlocal nobuflisted
+	setlocal filetype=bex
+	setlocal nonumber norelativenumber
+	setlocal nowrap
 
 	let b:bex_dir = l:dir
 	if !exists('g:bex_show_hidden')
@@ -41,14 +41,16 @@ function! bex#Open(path) abort
 	nnoremap <buffer> . :let g:bex_show_hidden = !g:bex_show_hidden <bar> call <SID>render()<CR>
 	call s:render()
 
-  	augroup bex_events
-	autocmd! * <buffer>
-	autocmd BufWriteCmd  <buffer> call s:confirm_unsaved(0)
-	autocmd BufLeave     <buffer> call s:confirm_unsaved(1)
-	autocmd QuitPre      <buffer> call s:confirm_unsaved(1)
-	autocmd TextChanged  <buffer> call s:reapply_props()
-	autocmd TextChangedI <buffer> call s:reapply_props()
-augroup END
+	augroup bex_events
+		autocmd! * <buffer>
+		autocmd BufWriteCmd  <buffer> call s:confirm_unsaved(0)
+		autocmd BufLeave     <buffer> call s:confirm_unsaved(1)
+		autocmd QuitPre      <buffer> call s:confirm_unsaved(1)
+		autocmd TextChanged  <buffer> call s:reapply_props()
+		autocmd TextChangedI <buffer> call s:reapply_props()
+		autocmd CursorMoved  <buffer> if line('.') == 1 | if line('$') == 1 | call append(1, '') | endif | call cursor(2, col('.')) | endif
+		autocmd CursorMovedI <buffer> if line('.') == 1 | if line('$') == 1 | call append(1, '') | endif | call cursor(2, col('.')) | endif
+	augroup END
 endfunction
 
 function! bex#Navigate(path) abort
@@ -94,8 +96,21 @@ function! s:human_size(size) abort
 endfunction
 
 function! s:reapply_props() abort
+	if empty(prop_type_get('bex_header'))
+		call prop_type_add('bex_header', {'highlight': 'BexHeader'})
+	endif
+	if empty(prop_type_get('bex_info'))
+		call prop_type_add('bex_info', {'highlight': 'BexInfo'})
+	endif
 	call prop_clear(1, line('$'))
-	for l:lnum in range(1, line('$'))
+	let l:home = expand('$HOME')
+	let l:display_dir = stridx(b:bex_dir, l:home) == 0 ? '~/' . b:bex_dir[len(l:home)+1:] : b:bex_dir
+	call prop_add(1, 0, {
+		\ 'type': 'bex_header',
+		\ 'text': l:display_dir . "\n",
+		\ 'text_padding_left': 0,
+	\ })
+	for l:lnum in range(2, line('$'))
 		let l:line = getline(l:lnum)
 		let l:id = matchstr(l:line, '^\/[0-9a-fA-F]\{8}')
 		if empty(l:id) | continue | endif
@@ -104,7 +119,7 @@ function! s:reapply_props() abort
 		let l:perm = getfperm(l:item.path)
 		let l:size = getfsize(l:item.path)
 		let l:info = printf('%-10s %8s %10s', l:perm, s:human_size(l:size), s:relative_time(getftime(l:item.path)))
-	   	call prop_add(l:lnum, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
+		call prop_add(l:lnum, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
 	endfor
 endfunction
 
@@ -118,59 +133,72 @@ function! s:render() abort
 	if g:bex_show_hidden
 		let l:all += glob(b:bex_dir . l:sep . '.[^.]*', 0, 1)
 	endif
-	
-	
+
 	let b:bex_snapshot = {}
-  
 	let l:lines = []
 	let l:idx = 0
   
 	for l:p in l:all
 		let l:name = fnamemodify(l:p, ':t')
 		if l:name ==# '.' || l:name ==# '..' || empty(l:name) | continue | endif
-    
 		let l:is_dir = isdirectory(l:p)
 		let l:id = printf('/%08x ', l:idx)
 		let l:display = l:name . (l:is_dir ? '/' : '')
-    
 		call add(l:lines, l:id . l:display)
 		let b:bex_snapshot[trim(l:id)] = { 'name': l:name, 'is_dir': l:is_dir, 'path': l:p }
 		let l:idx += 1
 	endfor
 
 	silent %delete _
-	call setline(1, l:lines)
+	call setline(1, [''] + l:lines)
+	if empty(l:lines)
+		call append(1, '')
+	endif
 	setlocal nomodified
 
 	call prop_clear(1, line('$'))
+
+	highlight Normal ctermfg=White
+	highlight BexHeader ctermfg=Blue cterm=bold gui=bold
 	highlight BexInfo guifg=#555555 ctermfg=239
-	if empty(prop_type_get('bex_info'))
-		call prop_type_add('bex_info', {'highlight': 'BexInfo'})
+	highlight BexID guifg=#555555 ctermfg=239
+	highlight BexDir ctermfg=Blue cterm=bold
+	highlight BexHiddenDir ctermfg=Blue cterm=bold
+	highlight BexHiddenFile ctermfg=White
+
+	if !empty(prop_type_get('bex_header'))
+		call prop_type_delete('bex_header')
 	endif
+	call prop_type_add('bex_header', {'highlight': 'BexHeader'})
+	if !empty(prop_type_get('bex_info'))
+		call prop_type_delete('bex_info')
+	endif
+	call prop_type_add('bex_info', {'highlight': 'BexInfo'})
+
+	let l:home = expand('$HOME')
+	let l:display_dir = stridx(b:bex_dir, l:home) == 0 ? '~/' . b:bex_dir[len(l:home)+1:] : b:bex_dir
+	call prop_add(1, 0, {
+		\ 'type': 'bex_header',
+		\ 'text': l:display_dir . "\n",
+		\ 'text_padding_left': 0,
+	\ })
 
 	let l:idx = 0
 	for l:p in l:all
 		let l:name = fnamemodify(l:p, ':t')
 		if l:name ==# '.' || l:name ==# '..' || empty(l:name) | continue | endif
-
 		let l:perm = getfperm(l:p)
 		let l:size = getfsize(l:p)
 		let l:info = printf('%-10s %8s %10s', l:perm, s:human_size(l:size), s:relative_time(getftime(l:p)))
-		call prop_add(l:idx + 1, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
+		call prop_add(l:idx + 2, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
 		let l:idx += 1
 	endfor
-  
+
 	syntax clear
 	syntax match BexID /^\/[0-9a-fA-F]\+\ze\s/
 	syntax match BexDir        /\zs\S\+\/$/
 	syntax match BexHiddenDir  /\zs\.[^/]*\/$/
 	syntax match BexHiddenFile /\%(^\s*\|\s\)\zs\.[^/]\+$/
-
-	highlight Normal ctermfg=White 
-	highlight BexID guifg=#555555 ctermfg=239
-	highlight BexDir ctermfg=Blue cterm=bold
-	highlight BexHiddenDir ctermfg=Blue cterm=bold
-	highlight BexHiddenFile ctermfg=White
 
 	call setpos('.', l:save_cursor)
 endfunction
@@ -265,7 +293,7 @@ function! s:prepare_buffer_changes() abort
 	let l:HasId = {line -> len(matchstr(line, '^\/[0-9a-fA-F]\{8}')) == 9}
 
 	let l:new_buffer = []
-	for l:line in getline(1, line('$'))
+	for l:line in getline(2, line('$'))
 		if !empty(trim(l:line))
 			call add(l:new_buffer, l:line)
 		endif
