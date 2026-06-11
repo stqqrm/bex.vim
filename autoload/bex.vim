@@ -43,6 +43,7 @@ function! bex#Open(path) abort
 
 	augroup bex_events
 		autocmd! * <buffer>
+		autocmd VimResized <buffer> call s:render()
 		autocmd BufWriteCmd  <buffer> call s:confirm_unsaved(0)
 		autocmd BufLeave     <buffer> call s:confirm_unsaved(1)
 		autocmd QuitPre      <buffer> call s:confirm_unsaved(1)
@@ -103,13 +104,7 @@ function! s:reapply_props() abort
 		call prop_type_add('bex_info', {'highlight': 'BexInfo'})
 	endif
 	call prop_clear(1, line('$'))
-	let l:home = expand('$HOME')
-	let l:display_dir = stridx(b:bex_dir, l:home) == 0 ? '~/' . b:bex_dir[len(l:home)+1:] : b:bex_dir
-	call prop_add(1, 0, {
-		\ 'type': 'bex_header',
-		\ 'text': l:display_dir . "\n",
-		\ 'text_padding_left': 0,
-	\ })
+	call s:render_header()
 	for l:lnum in range(2, line('$'))
 		let l:line = getline(l:lnum)
 		let l:id = matchstr(l:line, '^\/[0-9a-fA-F]\{8}')
@@ -121,6 +116,27 @@ function! s:reapply_props() abort
 		let l:info = printf('%-10s %8s %10s', l:perm, s:human_size(l:size), s:relative_time(getftime(l:item.path)))
 		call prop_add(l:lnum, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
 	endfor
+endfunction
+
+function! s:render_header() abort
+	if !empty(prop_type_get('bex_status'))
+		call prop_type_delete('bex_status')
+	endif
+	call prop_type_add('bex_status', {'highlight': g:bex_show_hidden ? 'BexVisible' : 'BexHidden'})
+
+	let l:home = expand('$HOME')
+	let l:left = stridx(b:bex_dir, l:home) == 0 ? '~/' . b:bex_dir[len(l:home)+1:] : b:bex_dir
+	let l:right = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
+	call prop_add(1, 0, {
+		\ 'type': 'bex_header',
+		\ 'text': l:left . "\n",
+		\ 'text_padding_left': 0,
+	\ })
+	call prop_add(1, 0, {
+		\ 'type': 'bex_status',
+		\ 'text': l:right,
+		\ 'text_align': 'right',
+	\ })
 endfunction
 
 function! s:render() abort
@@ -158,14 +174,16 @@ function! s:render() abort
 
 	call prop_clear(1, line('$'))
 
-	highlight Normal ctermfg=White
-	highlight BexHeader ctermfg=Blue cterm=bold gui=bold
-	highlight BexInfo guifg=#555555 ctermfg=239
-	highlight BexID guifg=#555555 ctermfg=239
-	highlight BexDir ctermfg=Blue cterm=bold
-	highlight BexHiddenDir ctermfg=Blue cterm=bold
+	highlight Normal		ctermfg=White
+	highlight BexHeader		ctermfg=Blue cterm=bold gui=bold
+	highlight BexInfo		guifg=#555555 ctermfg=239
+	highlight BexID			guifg=#555555 ctermfg=239
+	highlight BexDir		ctermfg=Blue cterm=bold
+	highlight BexHiddenDir	ctermfg=Blue cterm=bold
 	highlight BexHiddenFile ctermfg=White
-
+	highlight BexVisible	ctermfg=Green cterm=bold gui=bold
+	highlight BexHidden		ctermfg=Red cterm=bold gui=bold
+	
 	if !empty(prop_type_get('bex_header'))
 		call prop_type_delete('bex_header')
 	endif
@@ -174,14 +192,18 @@ function! s:render() abort
 		call prop_type_delete('bex_info')
 	endif
 	call prop_type_add('bex_info', {'highlight': 'BexInfo'})
+	
+	if !empty(prop_type_get('bex_header_right'))
+		call prop_type_delete('bex_header_right')
+	endif
+	call prop_type_add('bex_header_right', {'highlight': 'BexHeader'})
+	
+	let l:hidden_status = g:bex_show_hidden ? '[hidden: on]' : '[hidden: off]'
 
 	let l:home = expand('$HOME')
 	let l:display_dir = stridx(b:bex_dir, l:home) == 0 ? '~/' . b:bex_dir[len(l:home)+1:] : b:bex_dir
-	call prop_add(1, 0, {
-		\ 'type': 'bex_header',
-		\ 'text': l:display_dir . "\n",
-		\ 'text_padding_left': 0,
-	\ })
+
+	call s:render_header()
 
 	let l:idx = 0
 	for l:p in l:all
@@ -194,7 +216,11 @@ function! s:render() abort
 		let l:idx += 1
 	endfor
 
+	setlocal conceallevel=2
+	setlocal concealcursor=vc
+	
 	syntax clear
+	"syntax match BexID /^\/[0-9a-fA-F]\+\s/ conceal
 	syntax match BexID /^\/[0-9a-fA-F]\+\ze\s/
 	syntax match BexDir        /\zs\S\+\/$/
 	syntax match BexHiddenDir  /\zs\.[^/]*\/$/
