@@ -18,6 +18,13 @@ function! bex#ToggleHidden() abort
 	call s:render()
 endfunction
 
+function! s:ensure_empty_line() abort
+	let l:last = getline(line('$'))
+	if !empty(trim(l:last))
+		call append(line('$'), '')
+	endif
+endfunction
+
 function! bex#Open(path) abort
 	if empty(a:path)
 		let l:current_file_dir = expand('%:p:h')
@@ -55,6 +62,8 @@ function! bex#Open(path) abort
 	endif
 
 	nnoremap <buffer> <silent> . :call bex#ToggleHidden()<CR>
+	nnoremap <buffer> <silent> p p:call <SID>ensure_empty_line()<CR>
+	nnoremap <buffer> <silent> P P:call <SID>ensure_empty_line()<CR>
 
 	call s:render()
 
@@ -113,20 +122,6 @@ function! s:reset_cache() abort
 endfunction
 
 function! s:on_write() abort
-	" Cache all open bex buffers
-	let l:cur_buf = bufnr('%')
-	for l:buf in range(1, bufnr('$'))
-		if bufexists(l:buf) && getbufvar(l:buf, '&filetype') ==# 'bex'
-			let l:bex_dir = getbufvar(l:buf, 'bex_dir')
-			if !empty(l:bex_dir) && !has_key(g:bex_cache, l:bex_dir)
-				let l:saved_lines = getbufline(l:buf, 1, '$')
-				" Temporarily switch context to cache that buffer
-				execute 'noautocmd buffer ' . l:buf
-				call s:cache_current()
-				execute 'noautocmd buffer ' . l:cur_buf
-			endif
-		endif
-	endfor
 	call s:cache_current()
 
 	if empty(g:bex_cache)
@@ -134,6 +129,15 @@ function! s:on_write() abort
 		return
 	endif
 
+	" Validate all cached plans for errors first
+	for [l:dir, l:plan] in items(g:bex_cache)
+		if !empty(l:plan.error)
+			echohl ErrorMsg | echom l:plan.error | echohl None
+			return
+		endif
+	endfor
+
+	" Collect all deletions that are not moves or copies
 	let l:all_dels = []
 	let l:home = expand('$HOME')
 	for [l:dir, l:plan] in items(g:bex_cache)
@@ -517,7 +521,7 @@ function! s:restore_cached_buffer() abort
 	endfor
 
 	setlocal nomodified
-endfunction
+endfunction
 
 function! s:prepare_buffer_changes() abort
 	let l:result = {
@@ -579,7 +583,6 @@ function! s:prepare_buffer_changes() abort
 				for [l:odir, l:osnap] in items(g:bex_snapshots)
 					if l:odir ==# b:bex_dir | continue | endif
 					if !has_key(l:osnap, l:id) | continue | endif
-					" Check if origin cached a deletion for this id
 					let l:deleted_in_origin = 0
 					if has_key(g:bex_cache, l:odir)
 						for l:odel in g:bex_cache[l:odir].del_buffer
@@ -619,6 +622,15 @@ function! s:prepare_buffer_changes() abort
 	let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
 	for l:entry in l:result.entries_buffer
 		let l:name = substitute(l:entry, '/$', '', '')
+		let l:path = b:bex_dir . l:sep . l:name
+		if filereadable(l:path) || isdirectory(l:path)
+			let l:result.error = 'bex: Already exists: ' . l:name
+			return l:result
+		endif
+	endfor
+
+	for l:entry in l:result.move_buffer + l:result.copy_buffer
+		let l:name = substitute(substitute(l:entry.new, '^\/[0-9a-fA-F]\+\s\+', '', ''), '/$', '', '')
 		let l:path = b:bex_dir . l:sep . l:name
 		if filereadable(l:path) || isdirectory(l:path)
 			let l:result.error = 'bex: Already exists: ' . l:name
