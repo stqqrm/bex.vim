@@ -42,13 +42,34 @@ function! bex#Open(path) abort
 	call s:render()
 
   	augroup bex_events
-		autocmd! * <buffer>
-		autocmd BufWriteCmd <buffer> call s:apply_buffer_changes()
-		autocmd BufLeave     <buffer> call s:confirm_unsaved()
-		autocmd QuitPre      <buffer> call s:confirm_unsaved()
-		autocmd TextChanged  <buffer> call s:reapply_props()
-		autocmd TextChangedI <buffer> call s:reapply_props()
-	augroup ENDendfunction
+	autocmd! * <buffer>
+	autocmd BufWriteCmd  <buffer> call s:confirm_unsaved(0)
+	autocmd BufLeave     <buffer> call s:confirm_unsaved(1)
+	autocmd QuitPre      <buffer> call s:confirm_unsaved(1)
+	autocmd TextChanged  <buffer> call s:reapply_props()
+	autocmd TextChangedI <buffer> call s:reapply_props()
+augroup END
+endfunction
+
+function! bex#Navigate(path) abort
+	let l:dir = fnamemodify(a:path, ':p')
+	if len(l:dir) > 1
+		let l:dir = substitute(l:dir, '[/\\]$', '', '')
+	endif
+	if !isdirectory(l:dir)
+		echoerr 'bex: Directory not found: ' . l:dir
+		return
+	endif
+
+	if &modified
+		call s:confirm_unsaved(1)
+		if &modified | return | endif
+	endif
+
+	setlocal nomodified
+	let b:bex_dir = l:dir
+	execute 'silent file ' . fnameescape('bex://' . l:dir)
+	call s:render()
 endfunction
 
 function! s:relative_time(ftime) abort
@@ -154,15 +175,48 @@ function! s:render() abort
 	call setpos('.', l:save_cursor)
 endfunction
 
-function! s:confirm_unsaved() abort
-	if &modified
-		let l:ans = input('bex: Unsaved changes, apply them? [y/N]: ')
+function! s:confirm_unsaved(ask) abort
+	if !&modified | return | endif
+	if get(b:, 'bex_confirming', 0) | return | endif
+	let b:bex_confirming = 1
+
+	let l:plan = s:prepare_buffer_changes()
+
+	if !empty(l:plan.error)
+		echohl ErrorMsg | echom l:plan.error | echohl None
+		let b:bex_confirming = 0
+		return
+	endif
+
+	if !empty(l:plan.del_buffer)
+		let l:home = expand('$HOME')
+		echo 'bex: Files to delete:'
+		for l:entry in l:plan.del_buffer
+			let l:id = matchstr(l:entry, '^\/[0-9a-fA-F]\{8}')
+			if has_key(b:bex_snapshot, l:id)
+				let l:dpath = b:bex_snapshot[l:id].path
+				let l:dpath = stridx(l:dpath, l:home) == 0 ? '~/' . l:dpath[len(l:home)+1:] : l:dpath
+				echo '  ' . l:dpath
+			endif
+		endfor
+		let l:ans = input('bex: Delete these files and apply changes? [y/N]: ')
 		if l:ans ==# 'y' || l:ans ==# 'Y'
-			call s:apply_buffer_changes()
+			call s:apply_buffer_changes(l:plan)
 		else
 			setlocal nomodified
 		endif
+	elseif a:ask
+		let l:ans = input('bex: Unsaved changes, apply them? [y/N]: ')
+		if l:ans ==# 'y' || l:ans ==# 'Y'
+			call s:apply_buffer_changes(l:plan)
+		else
+			setlocal nomodified
+		endif
+	else
+		call s:apply_buffer_changes(l:plan)
 	endif
+
+	let b:bex_confirming = 0
 endfunction
 
 function! bex#OnSelect() abort
@@ -174,11 +228,13 @@ function! bex#OnSelect() abort
 	if !has_key(b:bex_snapshot, l:id) | return | endif
 	let l:item = b:bex_snapshot[l:id]
 
-	call s:confirm_unsaved()
-
 	if l:item.is_dir
-		call bex#Open(l:item.path)
+		call bex#Navigate(l:item.path)
 	else
+		if &modified
+			call s:confirm_unsaved(1)
+			if &modified | return | endif
+		endif
 		execute 'edit ' . fnameescape(l:item.path)
 	endif
 endfunction
@@ -189,41 +245,32 @@ function! bex#GoUp() abort
 		echo 'bex: Already at root directory'
 		return
 	endif
-	call bex#Open(l:parent)
+	call bex#Navigate(l:parent)
 endfunction
 
-function! s:apply_buffer_changes() abort
-	setlocal nomodified
-
-	let l:throw_error = v:false
-	let l:err = ""
-
-	" Queried buffers
-	let l:new_buffer = []
-	let l:old_buffer = []
-
-	" Modification order. 
-	" 1. Delete
-	" 2. Rename (__tmp__ name)
-	" 3. Create entries
-	" 4. Remove (__tmp__)
-	let l:del_buffer = []
-	let l:rename_buffer = []
-	let l:entries_buffer = []
-	let l:result_buffer = []
+function! s:prepare_buffer_changes() abort
+	let l:result = {
+		\ 'error': '',
+		\ 'del_buffer': [],
+		\ 'rename_buffer': [],
+		\ 'entries_buffer': [],
+	\ }
 
 	let l:HasId = {line -> len(matchstr(line, '^\/[0-9a-fA-F]\{8}')) == 9}
 
+	let l:new_buffer = []
 	for l:line in getline(1, line('$'))
 		if !empty(trim(l:line))
 			call add(l:new_buffer, l:line)
 		endif
 	endfor
-	
+
+	let l:old_buffer = []
 	for [l:id, l:item] in items(b:bex_snapshot)
 		call add(l:old_buffer, l:id . ' ' . l:item.name . (l:item.is_dir ? '/' : ''))
 	endfor
 
+	" Deletions
 	for l:entry in l:old_buffer
 		let l:id = matchstr(l:entry, '^\/[0-9a-fA-F]\{8}')
 		let l:found = 0
@@ -233,92 +280,77 @@ function! s:apply_buffer_changes() abort
 				break
 			endif
 		endfor
-		
 		if !l:found
-			call add(l:del_buffer, l:entry)
+			call add(l:result.del_buffer, l:entry)
 		endif
 	endfor
 
+	" Renames and new entries
 	for l:new_line in l:new_buffer
 		if l:HasId(l:new_line)
 			let l:id = matchstr(l:new_line, '^\/[0-9a-fA-F]\{8}')
 			for l:old_entry in l:old_buffer
 				if stridx(l:old_entry, l:id) == 0
-					if l:old_entry !=# l:new_line
-						if !empty(l:id)
-							call add(l:rename_buffer, {'id': l:id, 'old': l:old_entry, 'new': l:new_line})
-						endif
+					if l:old_entry !=# l:new_line && !empty(l:id)
+						call add(l:result.rename_buffer, {'id': l:id, 'old': l:old_entry, 'new': l:new_line})
 					endif
 					break
 				endif
 			endfor
 		else
-			call add(l:entries_buffer, l:new_line)
+			call add(l:result.entries_buffer, l:new_line)
 		endif
-	endfor
-
-	let l:result_buffer = []
-	for l:item in l:rename_buffer
-		call add(l:result_buffer, l:item.new)
-	endfor
-	for l:item in l:entries_buffer
-		call add(l:result_buffer, l:item)
 	endfor
 
 	" Collision check
 	let l:seen = []
-	for l:line in l:result_buffer
-		let l:name = substitute(l:line, '^\/[0-9a-fA-F]\{8}\s\+', '', '')
+	for l:line in l:result.rename_buffer + l:result.entries_buffer
+		let l:name = substitute(type(l:line) == v:t_dict ? l:line.new : l:line, '^\/[0-9a-fA-F]\{8}\s\+', '', '')
 		if index(l:seen, l:name) >= 0
-			let l:throw_error = v:true
-			let l:err = "bex: Collision detected: " . l:name
-			break
+			let l:result.error = 'bex: Collision detected: ' . l:name
+			return l:result
 		endif
 		call add(l:seen, l:name)
 	endfor
 
 	" Check new entries don't already exist on disk
 	let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
-	for l:entry in l:entries_buffer
+	for l:entry in l:result.entries_buffer
 		let l:name = substitute(l:entry, '/$', '', '')
 		let l:path = b:bex_dir . l:sep . l:name
 		if filereadable(l:path) || isdirectory(l:path)
-			let l:throw_error = v:true
-			let l:err = 'bex: Already exists: ' . l:name
-			break
+			let l:result.error = 'bex: Already exists: ' . l:name
+			return l:result
 		endif
 	endfor
 
-	if l:throw_error
-		echohl ErrorMsg | echom l:err | echohl None
-		return
-	endif
+	return l:result
+endfunction
+
+function! s:apply_buffer_changes(plan) abort
+	setlocal nomodified
 
 	" 1. Delete
-	for l:entry in l:del_buffer
+	for l:entry in a:plan.del_buffer
 		let l:id = matchstr(l:entry, '^\/[0-9a-fA-F]\{8}')
 		if has_key(b:bex_snapshot, l:id)
 			let l:path = b:bex_snapshot[l:id].path
-			if isdirectory(l:path)
-				call delete(l:path, 'rf')
-			else
-				call delete(l:path)
-			endif
+			call delete(l:path, isdirectory(l:path) ? 'rf' : '')
 		endif
 	endfor
 
 	" 2. Rename to __tmp__
 	let l:tmp_buffer = []
-	for l:item in l:rename_buffer
+	for l:item in a:plan.rename_buffer
 		let l:old_path = b:bex_snapshot[l:item.id].path
 		let l:tmp_path = fnamemodify(l:old_path, ':h') . '/__tmp__.' . fnamemodify(l:old_path, ':t')
 		call rename(l:old_path, l:tmp_path)
 		call add(l:tmp_buffer, {'tmp': l:tmp_path, 'new_name': substitute(l:item.new, '^\/[0-9a-fA-F]\{8}\s\+', '', '')})
 	endfor
-	
+
 	" 3. Create new entries
 	let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
-	for l:entry in l:entries_buffer
+	for l:entry in a:plan.entries_buffer
 		let l:name = substitute(l:entry, '/$', '', '')
 		let l:path = b:bex_dir . l:sep . l:name
 		if l:entry =~# '/$'
@@ -334,25 +366,5 @@ function! s:apply_buffer_changes() abort
 		call rename(l:item.tmp, l:dst)
 	endfor
 
-	" Confirm deletions
-	if !empty(l:del_buffer)
-		let l:home = expand('$HOME')
-		echo "bex: Files to delete:"
-		for l:entry in l:del_buffer
-			let l:id = matchstr(l:entry, '^\/[0-9a-fA-F]\{8}')
-			if has_key(b:bex_snapshot, l:id)
-				let l:dpath = b:bex_snapshot[l:id].path
-				let l:dpath = stridx(l:dpath, l:home) == 0 ? '~/' . l:dpath[len(l:home)+1:] : l:dpath
-				echo "  " . l:dpath
-			endif
-		endfor
-		let l:confirm = input("bex: Delete these files? [y/N]: ")
-		if l:confirm !=# 'y' && l:confirm !=# 'Y'
-			echo "\nbex: Deletion cancelled"
-			let l:del_buffer = []
-		endif
-		echo ""
-	endif
-	
 	call s:render()
 endfunction
