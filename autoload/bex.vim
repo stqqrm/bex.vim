@@ -25,6 +25,172 @@ function! s:ensure_empty_line() abort
 	endif
 endfunction
 
+function! s:open_changes_buf() abort
+	let l:main_win = winnr()
+	if bufexists('bex://changes')
+		let l:cbuf = bufnr('bex://changes')
+		if bufwinnr(l:cbuf) == -1
+			rightbelow vertical 1vnew
+			execute 'buffer ' . l:cbuf
+		endif
+	else
+		rightbelow vertical 1vnew
+		edit bex://changes
+		setlocal buftype=nofile bufhidden=wipe noswapfile nobuflisted
+		setlocal nonumber norelativenumber nowrap
+		setlocal filetype=bex_changes
+		setlocal modifiable
+		setlocal winfixwidth
+		setlocal statusline=\ changes
+	endif
+	let b:bex_changes_for = bufnr('#')
+	execute l:main_win . 'wincmd w'
+	call s:update_changes_buf()
+endfunction
+
+function! s:resize_changes_buf() abort
+	let l:cbuf = bufnr('bex://changes')
+	if l:cbuf == -1 || bufwinnr(l:cbuf) == -1 | return | endif
+	let l:cur_win = winnr()
+	execute bufwinnr(l:cbuf) . 'wincmd w'
+	vertical resize 30
+	execute l:cur_win . 'wincmd w'
+endfunction
+
+function! s:update_changes_buf() abort
+	let l:plan = s:prepare_buffer_changes()
+
+	let l:all_plans = {b:bex_dir: l:plan}
+	for [l:dir, l:cplan] in items(g:bex_cache)
+		if l:dir !=# b:bex_dir
+			let l:all_plans[l:dir] = l:cplan
+		endif
+	endfor
+
+	let l:has_changes = 0
+	for [l:dir, l:p] in items(l:all_plans)
+		if !empty(l:p.del_buffer) || !empty(l:p.rename_buffer)
+			\ || !empty(l:p.move_buffer) || !empty(l:p.copy_buffer)
+			\ || !empty(l:p.entries_buffer)
+			let l:has_changes = 1
+			break
+		endif
+	endfor
+
+	let l:cbuf = bufnr('bex://changes')
+	if !l:has_changes
+		if l:cbuf != -1 && bufwinnr(l:cbuf) != -1
+			let l:cur_win = winnr()
+			let l:cbufwin = bufwinnr(l:cbuf)
+			execute l:cbufwin . 'wincmd w'
+			close
+			if winnr() != l:cur_win
+				execute l:cur_win . 'wincmd w'
+			endif
+		endif
+		return
+	endif
+
+	if l:cbuf == -1 || bufwinnr(l:cbuf) == -1
+		call s:open_changes_buf()
+		return
+	endif
+
+	let l:home = expand('$HOME')
+	let l:lines = []
+	let l:highlights = []
+	let l:lnum = 1
+
+	for [l:dir, l:p] in items(l:all_plans)
+		let l:dir_has_changes = !empty(l:p.del_buffer) || !empty(l:p.rename_buffer)
+			\ || !empty(l:p.move_buffer) || !empty(l:p.copy_buffer)
+			\ || !empty(l:p.entries_buffer)
+		if !l:dir_has_changes | continue | endif
+
+		let l:dd = stridx(l:dir, l:home) == 0 ? '~/' . l:dir[len(l:home)+1:] : l:dir
+		call add(l:lines, l:dd)
+		call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesHeader'})
+		let l:lnum += 1
+
+		for l:entry in l:p.del_buffer
+			let l:id = matchstr(l:entry, '^\/[0-9a-fA-F]\+')
+			if has_key(l:p.snapshot, l:id)
+				let l:name = l:p.snapshot[l:id].name . (l:p.snapshot[l:id].is_dir ? '/' : '')
+				call add(l:lines, '  - ' . l:name)
+				call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesDel'})
+				let l:lnum += 1
+			endif
+		endfor
+
+		for l:item in l:p.rename_buffer
+			let l:old = substitute(l:item.old, '^\/[0-9a-fA-F]\+\s\+', '', '')
+			let l:new = substitute(l:item.new, '^\/[0-9a-fA-F]\+\s\+', '', '')
+			call add(l:lines, '  ~ ' . l:old . ' -> ' . l:new)
+			call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesRename'})
+			let l:lnum += 1
+		endfor
+
+		for l:entry in l:p.move_buffer
+			let l:name = substitute(l:entry.new, '^\/[0-9a-fA-F]\+\s\+', '', '')
+			call add(l:lines, '  -> ' . l:name . ' (move)')
+			call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesMove'})
+			let l:lnum += 1
+		endfor
+
+		for l:entry in l:p.copy_buffer
+			let l:name = substitute(l:entry.new, '^\/[0-9a-fA-F]\+\s\+', '', '')
+			call add(l:lines, '  + ' . l:name . ' (copy)')
+			call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesAdd'})
+			let l:lnum += 1
+		endfor
+
+		for l:entry in l:p.entries_buffer
+			call add(l:lines, '  + ' . l:entry)
+			call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesAdd'})
+			let l:lnum += 1
+		endfor
+
+		call add(l:lines, '')
+		let l:lnum += 1
+	endfor
+
+	let l:cur_win = winnr()
+	let l:cbufwin = bufwinnr(l:cbuf)
+	execute l:cbufwin . 'wincmd w'
+
+	call setbufvar(l:cbuf, '&modifiable', 1)
+	silent %delete _
+	call setline(1, l:lines)
+
+	call prop_clear(1, line('$'))
+	for l:item in l:highlights
+		call prop_add(l:item.lnum, 1, {
+			\ 'end_col': len(getline(l:item.lnum)) + 1,
+			\ 'type': l:item.hl,
+		\ })
+	endfor
+
+let l:max_width = 0
+	" 1. Iterate through all lines in the buffer
+	for l:lnum in range(1, line('$'))
+		let l:line_content = getline(l:lnum)
+		let l:width = strdisplaywidth(l:line_content)
+		
+		if l:lnum > 1
+			let l:width += 1
+		endif
+		
+		let l:max_width = max([l:max_width, l:width])
+	endfor
+
+	" 3. Apply the width with a minimal sanity floor
+	let l:final_width = max([20, l:max_width + 2])
+	execute 'vertical resize ' . l:final_width
+
+	call setbufvar(l:cbuf, '&modifiable', 0)
+	execute l:cur_win . 'wincmd w'
+endfunction
+
 function! bex#Open(path) abort
 	if empty(a:path)
 		let l:current_file_dir = expand('%:p:h')
@@ -66,15 +232,18 @@ function! bex#Open(path) abort
 	nnoremap <buffer> <silent> P P:call <SID>ensure_empty_line()<CR>
 
 	call s:render()
+	call s:open_changes_buf()
 
 	augroup bex_events
 		autocmd! * <buffer>
-		autocmd VimResized   <buffer> call s:render()
+		autocmd VimResized <buffer> call s:cache_current() | call s:render() | call s:reapply_props() | call s:resize_changes_buf() | call s:update_changes_buf()
 		autocmd BufWriteCmd  <buffer> call s:on_write()
 		autocmd BufLeave     <buffer> call s:on_leave()
 		autocmd QuitPre      <buffer> call s:on_quit()
-		autocmd TextChanged  <buffer> call s:reapply_props()
+		"autocmd TextChanged  <buffer> call s:reapply_props()
 		autocmd TextChangedI <buffer> call s:reapply_props()
+		autocmd TextChanged  <buffer> call s:reapply_props() | call s:ensure_empty_line() | call s:update_changes_buf()
+		autocmd TextChangedI <buffer> call s:reapply_props() | call s:ensure_empty_line() | call s:update_changes_buf()
 		autocmd CursorMoved  <buffer> if line('.') == 1 | if line('$') == 1 | call append(1, '') | endif | call cursor(2, col('.')) | endif
 		autocmd CursorMovedI <buffer> if line('.') == 1 | if line('$') == 1 | call append(1, '') | endif | call cursor(2, col('.')) | endif
 	augroup END
@@ -302,8 +471,29 @@ function! s:on_leave() abort
 	setlocal nomodified
 endfunction
 
+function! s:confirm_preview(apply) abort
+	bwipe
+	if a:apply
+		call s:apply_all()
+	else
+		call setbufvar(bufnr('#'), '&modified', 0)
+	endif
+endfunction
+
 function! s:on_quit() abort
+	if &filetype !=# 'bex' | return | endif
+
+	" Close changes buffer if open
+	let l:cbuf = bufnr('bex://changes')
+	if l:cbuf != -1 && bufwinnr(l:cbuf) != -1
+		let l:cbufwin = bufwinnr(l:cbuf)
+		execute l:cbufwin . 'wincmd w'
+		close
+	endif
+
 	call s:cache_current()
+	setlocal nomodified
+
 	if empty(g:bex_cache) | return | endif
 	let l:count = len(g:bex_cache)
 	let l:ans = input('bex: Unsaved changes across ' . l:count . ' director' . (l:count == 1 ? 'y' : 'ies') . ', apply? [y/N]: ')
@@ -312,6 +502,7 @@ function! s:on_quit() abort
 		call s:apply_all()
 	else
 		call s:reset_cache()
+		setlocal nomodified
 	endif
 endfunction
 
@@ -431,6 +622,21 @@ function! s:render() abort
 	highlight BexVisible	ctermfg=Green cterm=bold gui=bold
 	highlight BexHidden		ctermfg=Red cterm=bold gui=bold
 
+	highlight BexChangesHeader ctermfg=Blue   cterm=bold gui=bold
+	highlight BexChangesDel    ctermfg=Red    cterm=bold gui=bold
+	highlight BexChangesRename ctermfg=Green  cterm=bold gui=bold
+	highlight BexChangesMove   ctermfg=Cyan   cterm=bold gui=bold
+	highlight BexChangesAdd    ctermfg=Green
+
+	for l:hl in ['BexChangesHeader', 'BexChangesDel', 'BexChangesRename', 'BexChangesMove', 'BexChangesAdd']
+		if !empty(prop_type_get(l:hl))
+			call prop_type_delete(l:hl)
+		endif
+		call prop_type_add(l:hl, {'highlight': l:hl})
+	endfor
+
+
+
 	if !empty(prop_type_get('bex_header'))
 		call prop_type_delete('bex_header')
 	endif
@@ -453,8 +659,8 @@ function! s:render() abort
 		let l:idx += 1
 	endfor
 
-	setlocal conceallevel=2
-	setlocal concealcursor=vc
+	"setlocal conceallevel=2
+	"setlocal concealcursor=vc
 
 	syntax clear
 	syntax match BexID /^\/[0-9a-fA-F]\+\ze\s/
@@ -653,6 +859,8 @@ function! bex#OnSelect() abort
 	if l:item.is_dir
 		call bex#Navigate(l:item.path)
 	else
+		call s:cache_current()
+		setlocal nomodified
 		execute 'edit ' . fnameescape(l:item.path)
 	endif
 endfunction
