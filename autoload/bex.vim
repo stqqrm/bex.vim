@@ -10,6 +10,7 @@ let g:bex_path_ids      = get(g:, 'bex_path_ids', {})
 let g:bex_snapshots     = get(g:, 'bex_snapshots', {})
 let g:bex_show_hidden   = get(g:, 'bex_show_hidden', 0)
 let g:bex_toggling      = get(g:, 'bex_toggling', 0)
+let g:bex_changes_show_ids = get(g:, 'bex_changes_show_ids', 0)
 
 if !has_key(g:, 'bex_show_hidden')
     let g:bex_show_hidden = 0
@@ -205,7 +206,8 @@ function! s:ParseBuffer() abort
         " Removed / Move From
         for l:del in get(l:state, 'delete', [])
 
-            call add(l:lines, '  - ' . l:del.name)
+            let l:id_prefix = g:bex_changes_show_ids ? l:del.id . ' ' : ''
+            call add(l:lines, '  - ' . l:id_prefix . l:del.name)
 
             if has_key(l:global_placements, l:del.id)
                 call add(l:highlights, {
@@ -225,8 +227,9 @@ function! s:ParseBuffer() abort
         " Renames
         for l:ren in get(l:state, 'rename', [])
 
+            let l:id_prefix = g:bex_changes_show_ids ? l:ren.id . ' ' : ''
             call add(l:lines,
-                        \ '  ~ ' . l:ren.old . ' -> ' . l:ren.new)
+                        \ '  ~ ' . l:id_prefix . l:ren.old . ' -> ' . l:ren.new)
 
             call add(l:highlights, {
                         \ 'lnum': l:lnum,
@@ -239,9 +242,11 @@ function! s:ParseBuffer() abort
         " Move To / Copy
         for l:mov in get(l:state, 'move_to', [])
 
+            let l:id_prefix = g:bex_changes_show_ids ? l:mov.id . ' ' : ''
+
             if has_key(l:global_deletions, l:mov.id)
 
-                call add(l:lines, '  + ' . l:mov.name)
+                call add(l:lines, '  + ' . l:id_prefix . l:mov.name)
 
                 call add(l:highlights, {
                             \ 'lnum': l:lnum,
@@ -250,7 +255,7 @@ function! s:ParseBuffer() abort
 
             else
 
-                call add(l:lines, '  * ' . l:mov.name)
+                call add(l:lines, '  * ' . l:id_prefix . l:mov.name)
 
                 call add(l:highlights, {
                             \ 'lnum': l:lnum,
@@ -265,7 +270,8 @@ function! s:ParseBuffer() abort
         " New entries
         for l:ent in get(l:state, 'entries', [])
 
-            call add(l:lines, '  + ' . l:ent)
+            let l:id_prefix = g:bex_changes_show_ids ? '(new) ' : ''
+            call add(l:lines, '  + ' . l:id_prefix . l:ent)
 
             call add(l:highlights, {
                         \ 'lnum': l:lnum,
@@ -378,9 +384,16 @@ function! bex#Open(path) abort
         autocmd BufWriteCmd  <buffer> call s:on_write()
         autocmd BufLeave     <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | setlocal nomodified
         autocmd BufUnload    <buffer> call s:on_unload()
-        autocmd TextChanged,TextChangedI <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props()
+        autocmd QuitPre <buffer> call s:on_quit()
+		autocmd TextChanged,TextChangedI <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props()
         autocmd CursorMoved,CursorMovedI <buffer> call s:handle_bounds()
-    augroup END
+	augroup END
+
+	augroup bex_changes_events
+		autocmd! * <buffer>
+		autocmd BufEnter  <buffer> let g:bex_changes_show_ids = 0 | call s:ParseBuffer()
+		autocmd BufLeave     <buffer> let g:bex_changes_show_ids = 1 | call s:ParseBuffer()
+	augroup END
 endfunction
 
 function! bex#Navigate(path) abort
@@ -623,6 +636,7 @@ function! s:restore_cached_buffer() abort
             if stridx(getline(l:lnum), l:del.id) == 0 | silent execute l:lnum . 'd _' | break | endif
         endfor
     endfor
+
     for l:ren in l:state.rename
         for l:lnum in range(2, line('$'))
             if stridx(getline(l:lnum), l:ren.id) == 0
@@ -630,17 +644,34 @@ function! s:restore_cached_buffer() abort
             endif
         endfor
     endfor
+
     for l:mov in l:state.move_to
         let l:found = 0
         for l:lnum in range(2, line('$')) | if stridx(getline(l:lnum), l:mov.id) == 0 | let l:found = 1 | break | endif | endfor
-        if !l:found | call append(line('$'), l:mov.id . ' ' . l:mov.name) | endif
+        if !l:found
+            let l:last = line('$')
+            if empty(trim(getline(l:last)))
+                call append(l:last - 1, l:mov.id . ' ' . l:mov.name)
+            else
+                call append(l:last, l:mov.id . ' ' . l:mov.name)
+            endif
+        endif
     endfor
+
     for l:ent in l:state.entries
         let l:found = 0
         for l:lnum in range(2, line('$')) | if getline(l:lnum) ==# l:ent | let l:found = 1 | break | endif | endfor
-        if !l:found | call append(line('$'), l:ent) | endif
+        if !l:found
+            let l:last = line('$')
+            if empty(trim(getline(l:last)))
+                call append(l:last - 1, l:ent)
+            else
+                call append(l:last, l:ent)
+            endif
+        endif
     endfor
-    setlocal nomodified
+
+	setlocal nomodified
 endfunction
 
 " ============================================================================
