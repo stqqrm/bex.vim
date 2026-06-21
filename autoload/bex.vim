@@ -7,7 +7,8 @@ highlight default BexHeader				ctermfg=Yellow cterm=bold gui=bold
 highlight default BexInfo				guifg=#404040
 highlight default BexID					guifg=#404040
 highlight default BexDir				ctermfg=Yellow cterm=bold
-highlight default BexHiddenDir			ctermfg=Blue cterm=bold
+highlight default BexHiddenID			guifg=#252525
+highlight default BexHiddenDir			ctermfg=Yellow cterm=bold
 "highlight default BexHiddenFile			ctermfg=White
 highlight default BexVisible			ctermfg=Green cterm=bold gui=bold
 highlight default BexHidden				ctermfg=Red cterm=bold gui=bold
@@ -797,7 +798,13 @@ function! s:reapply_props() abort
     endfor
 
     syntax clear
+    " 1. Standard IDs for normal files/directories
     syntax match BexID /^\/[0-9a-fA-F]\+\ze\s/
+    
+    " 2. Match IDs for hidden files/directories (ID followed by space and a dotfile)
+    syntax match BexHiddenID /^\/[0-9a-fA-F]\+\ze\s\+\.[^/]/
+
+    " 3. File and directory text matches
     syntax match BexDir        /\%(\/[0-9a-fA-F]\+\s\+\|\s*\)\zs[^/].\+\/$/
     syntax match BexDir        /\zs\S\+\/$/
     syntax match BexHiddenDir  /\zs\.[^/]*\/$/
