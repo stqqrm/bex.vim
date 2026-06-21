@@ -1,7 +1,25 @@
-" ============================================================================
 " File: autoload/bex.vim
 " Description: Cleaned, State-Driven ID-Tracked File Browser Engine
-" ============================================================================
+
+" --- Highlights ---
+highlight Normal						ctermfg=White
+highlight default BexHeader				ctermfg=Yellow cterm=bold gui=bold
+highlight default BexInfo				guifg=#404040
+highlight default BexID					guifg=#404040
+highlight default BexDir				ctermfg=Yellow cterm=bold
+highlight default BexHiddenDir			ctermfg=Blue cterm=bold
+"highlight default BexHiddenFile			ctermfg=White
+highlight default BexVisible			ctermfg=Green cterm=bold gui=bold
+highlight default BexHidden				ctermfg=Red cterm=bold gui=bold
+highlight default BexChangesDir			ctermfg=Yellow  cterm=bold gui=bold
+highlight default BexChangesDel			ctermfg=Red   cterm=bold gui=bold
+highlight default BexChangesAdd			ctermfg=Green
+highlight default BexChangesRename		ctermfg=Cyan cterm=bold gui=bold
+highlight default BexChangesMoveFrom	ctermfg=DarkGrey
+highlight default BexChangesMoveTo		ctermfg=Magenta  cterm=bold gui=bold
+highlight default BexChangesCopy		ctermfg=Blue
+highlight default BexDotfilesOn			ctermfg=Green cterm=bold gui=bold
+highlight default BexDotfilesOff		ctermfg=Red   cterm=bold gui=bold
 
 " --- Global State Initializations ---
 let g:bex_id_counter        = get(g:, 'bex_id_counter', 0)
@@ -14,28 +32,8 @@ let g:bex_changes_show_ids  = get(g:, 'bex_changes_show_ids', 0)
 let g:bex_cursor_pos        = get(g:, 'bex_cursor_pos', {})
 let g:bex_changes_bufnr     = get(g:, 'bex_changes_bufnr', -1)
 
-" --- Highlights ---
-highlight default BexHeader           ctermfg=Blue cterm=bold gui=bold
-highlight default BexInfo            guifg=#555555 ctermfg=239
-highlight default BexID              guifg=#555555 ctermfg=239
-highlight default BexDir              ctermfg=Blue cterm=bold
-highlight default BexHiddenDir       ctermfg=Blue cterm=bold
-highlight default BexHiddenFile      ctermfg=White
-highlight default BexVisible          ctermfg=Green cterm=bold gui=bold
-highlight default BexHidden           ctermfg=Red cterm=bold gui=bold
-highlight default BexChangesHeader   ctermfg=Blue  cterm=bold gui=bold
-highlight default BexChangesDel      ctermfg=Red   cterm=bold gui=bold
-highlight default BexChangesAdd      ctermfg=Green
-highlight default BexChangesRename   ctermfg=Yellow cterm=bold gui=bold
-highlight default BexChangesMoveFrom ctermfg=DarkGrey
-highlight default BexChangesMoveTo   ctermfg=Cyan  cterm=bold gui=bold
-highlight default BexChangesCopy     ctermfg=Blue
-highlight default BexDotfilesOn      ctermfg=Green cterm=bold gui=bold
-highlight default BexDotfilesOff     ctermfg=Red   cterm=bold gui=bold
 
-" ============================================================================
 " Public API
-" ============================================================================
 
 function! bex#Open(path) abort
     let l:dir = empty(a:path) ? (empty(expand('%:p:h')) ? getcwd() : expand('%:p:h')) : fnamemodify(a:path, ':p')
@@ -51,9 +49,6 @@ function! bex#Open(path) abort
     call matchadd('BexDotfilesOff', '\cdotfiles\s*[=:]\s*off')
 
     nnoremap <buffer> <silent> . :call bex#ToggleHidden()<CR>
-    nnoremap <buffer> <silent> p p:call <SID>ensure_empty_line()<CR>
-    nnoremap <buffer> <silent> P P:call <SID>ensure_empty_line()<CR>
-    nnoremap <buffer> <silent> f :call bex#Fzf()<CR>
 
     call s:render()
     call cursor(1, 1)
@@ -86,8 +81,6 @@ function! bex#Navigate(path) abort
 
     if has_key(g:bex_cursor_pos, l:dir)
         call setpos('.', g:bex_cursor_pos[l:dir])
-    else
-        call cursor(0, 1)
     endif
 endfunction
 
@@ -153,78 +146,7 @@ function! bex#UpdateVirtualDirectory(path) abort
     call s:ParseBuffer()
 endfunction
 
-" ============================================================================
-" FZF Integration
-" ============================================================================
-
-function! bex#Fzf() abort
-    if !executable('fzf')
-        echoerr 'bex: fzf not found in PATH'
-        return
-    endif
-
-    " Use fd if available for speed and .gitignore awareness, else fall back to find
-    if executable('fd')
-        let l:cmd = 'fd --type d --hidden --exclude .git . ' . shellescape(b:bex_dir)
-    else
-        let l:cmd = 'find ' . shellescape(b:bex_dir) . ' -type d -not -path ''*/.git/*'''
-    endif
-
-    let l:root = b:bex_dir
-
-    " Run fzf in a terminal split; write the selection to a tempfile
-    let l:tmp = tempname()
-    let l:preview = 'ls ' . shellescape(l:root) . '/"{}" 2>/dev/null | head -50'
-    let l:fzf_cmd = 'fzf --prompt="navigate> " --preview=' . shellescape(l:preview)
-        \ . ' > ' . shellescape(l:tmp)
-
-    " Feed the list into fzf via a shell pipeline, stripping the root prefix
-    let l:shell_cmd = '(' . l:cmd . ') | sed '
-        \ . shellescape('s|^' . l:root . '/||')
-        \ . ' | ' . l:fzf_cmd
-
-    let l:bex_buf = bufnr('%')
-    let l:bex_dir = b:bex_dir
-
-    botright 12new
-    setlocal bufhidden=wipe nobuflisted
-    call termopen(['sh', '-c', l:shell_cmd], {
-        \ 'on_exit': {job, code, ev ->
-        \   s:fzf_on_exit(l:tmp, l:root, l:bex_buf, code)}
-        \ })
-    startinsert
-endfunction
-
-function! s:fzf_on_exit(tmp, root, bex_buf, code) abort
-    " Close the fzf terminal window
-    if winnr('$') > 1
-        close
-    endif
-    if a:code != 0 || !filereadable(a:tmp) | return | endif
-
-    let l:sel = trim(join(readfile(a:tmp), ''))
-    call delete(a:tmp)
-    if empty(l:sel) | return | endif
-
-    " Resolve to absolute path: if sel already absolute use it, else join with root
-    let l:dest = (l:sel =~# '^/') ? l:sel : a:root . '/' . l:sel
-    let l:dest = substitute(l:dest, '/\+', '/', 'g')
-    if !isdirectory(l:dest)
-        echoerr 'bex: Not a directory: ' . l:dest
-        return
-    endif
-
-    " Switch back to the bex buffer and navigate
-    let l:bex_win = bufwinnr(a:bex_buf)
-    if l:bex_win != -1
-        execute l:bex_win . 'wincmd w'
-    endif
-    call bex#Navigate(l:dest)
-endfunction
-
-" ============================================================================
 " Buffer Query & State
-" ============================================================================
 
 function! s:QueryBuffer() abort
     let l:state = {
@@ -286,14 +208,11 @@ function! s:QueryBuffer() abort
     return l:state
 endfunction
 
-" ============================================================================
 " File System Application
-" ============================================================================
 
-" Pre-flight validation: checks all filesystem-level conflicts before anything
-" is touched on disk. Returns a list of error strings (empty = all clear).
 function! s:validate_all() abort
     let l:errors = []
+    let l:conflicts = []
 
     for [l:dir, l:state] in items(g:bex_cache)
         let l:sep = (l:dir ==# '/' || l:dir ==# '\') ? '' : '/'
@@ -304,8 +223,6 @@ function! s:validate_all() abort
             let l:dest = fnamemodify(l:state.snapshot[l:ren.id].path, ':h')
                 \ . '/' . substitute(l:ren.new, '/$', '', '')
             if filereadable(l:dest) || isdirectory(l:dest)
-                " Only a conflict if the occupant is not being vacated by a
-                " delete or rename-away of the same-named item in this dir
                 let l:vacating = 0
                 for [l:snap_id, l:snap_item] in items(l:state.snapshot)
                     if l:snap_item.path ==# l:dest && l:snap_id !=# l:ren.id
@@ -338,8 +255,6 @@ function! s:validate_all() abort
                 call add(l:errors, 'move/copy: source missing on disk: ' . l:src)
                 continue
             endif
-            " Destination conflict — skip if dst IS the source (move in place),
-            " or if the occupant is being deleted or renamed away in the same save
             if (filereadable(l:dst) || isdirectory(l:dst)) && l:dst !=# l:src
                 let l:vacating = 0
                 let l:clean_dst = fnamemodify(l:dst, ':t')
@@ -357,17 +272,16 @@ function! s:validate_all() abort
                     endif
                 endfor
                 if !l:vacating
-                    call add(l:errors, 'move/copy conflict, destination already exists: ' . l:dst)
+                    " FIX: Instead of treating as hard abort error, add to soft conflicts to prompt user
+                    call add(l:conflicts, {'dir': l:dir, 'ent': l:mov.name, 'path': l:dst})
                 endif
             endif
         endfor
 
-        " --- Create conflicts ---
+        " --- Create conflicts: soft, prompt user ---
         for l:ent in l:state.entries
             let l:path = l:dir . l:sep . substitute(l:ent, '/$', '', '')
             if filereadable(l:path) || isdirectory(l:path)
-                " Only a conflict if the occupant isn't being deleted or renamed
-                " away by another operation in the same save
                 let l:vacating = 0
                 let l:clean_ent = substitute(l:ent, '/$', '', '')
                 for [l:snap_id, l:snap_item] in items(l:state.snapshot)
@@ -384,32 +298,58 @@ function! s:validate_all() abort
                     endif
                 endfor
                 if !l:vacating
-                    call add(l:errors, 'create conflict, already exists: ' . l:path)
+                    call add(l:conflicts, {'dir': l:dir, 'ent': l:ent, 'path': l:path})
                 endif
             endif
         endfor
     endfor
 
-    return l:errors
+    return {'errors': l:errors, 'conflicts': l:conflicts}
 endfunction
 
 function! s:on_write() abort
     call bex#UpdateVirtualDirectory(b:bex_dir)
     if empty(g:bex_cache) | setlocal nomodified | return | endif
 
-    " 1. Pre-flight: filesystem-level conflicts — must pass before we ask
-    "    the user anything or touch a single file
-    let l:errors = s:validate_all()
-    if !empty(l:errors)
+    " 1. Pre-flight validation
+    let l:result = s:validate_all()
+
+    " 2. Hard errors abort immediately
+    if !empty(l:result.errors)
         echohl ErrorMsg
-        for l:e in l:errors
+        for l:e in l:result.errors
             echoerr 'bex: ' . l:e
         endfor
         echohl None
         return
     endif
 
-    " 2. Confirm deletions (only reached when everything is known-safe)
+    " 3. Soft conflicts: files that would be overwritten on create
+    if !empty(l:result.conflicts)
+        echo 'bex: Files already exist and would be replaced:'
+        for l:c in l:result.conflicts | echo '  ' . l:c.path | endfor
+        let l:ans = input('bex: Replace existing files? [y/N]: ')
+        echo ''
+        if l:ans !=# 'y' && l:ans !=# 'Y'
+            for l:c in l:result.conflicts
+                if has_key(g:bex_cache, l:c.dir)
+                    let g:bex_cache[l:c.dir].entries =
+                        \ filter(copy(g:bex_cache[l:c.dir].entries),
+                        \        {_, v -> v !=# l:c.ent})
+                endif
+            endfor
+            let l:any_left = 0
+            for l:st in values(g:bex_cache)
+                if !empty(l:st.delete) || !empty(l:st.rename)
+                    \ || !empty(l:st.entries) || !empty(l:st.move_to)
+                    let l:any_left = 1 | break
+                endif
+            endfor
+            if !l:any_left | setlocal nomodified | return | endif
+        endif
+    endif
+
+    " 4. Confirm deletions
     let l:all_dels = []
     for [l:dir, l:state] in items(g:bex_cache)
         for l:del in l:state.delete
@@ -433,14 +373,12 @@ function! s:on_write() abort
         if l:ans !=# 'y' && l:ans !=# 'Y' | setlocal nomodified | return | endif
     endif
 
-    " 3. Apply — all checks already passed, only unexpected OS errors remain
+    " 5. Apply
     call s:apply_all()
 endfunction
 
 function! s:apply_all() abort
-    " -------------------------------------------------------------------------
     " Pass 1: Renames (via tmp to avoid same-dir swap collisions)
-    " -------------------------------------------------------------------------
     for [l:dir, l:state] in items(g:bex_cache)
         let l:tmps = []
         for l:ren in l:state.rename
@@ -461,9 +399,7 @@ function! s:apply_all() abort
         endfor
     endfor
 
-    " -------------------------------------------------------------------------
     " Pass 2: Moves, copies, creates, deletes
-    " -------------------------------------------------------------------------
     for [l:dir, l:state] in items(g:bex_cache)
         let l:sep = (l:dir ==# '/' || l:dir ==# '\') ? '' : '/'
 
@@ -591,9 +527,7 @@ function! s:apply_all() abort
         endfor
     endfor
 
-    " -------------------------------------------------------------------------
     " Reset state and re-render
-    " -------------------------------------------------------------------------
     let g:bex_cache      = {}
     let g:bex_snapshots  = {}
     let g:bex_id_counter = 0
@@ -647,9 +581,7 @@ function! s:on_quit() abort
     call setbufvar(l:buf, '&modified', 0)
 endfunction
 
-" ============================================================================
 " Rendering
-" ============================================================================
 
 function! s:render() abort
     let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
@@ -675,7 +607,6 @@ function! s:render() abort
 
     silent %delete _
     call setline(1, l:lines)
-    if empty(l:lines) | call append(0, '') | endif
     setlocal nomodified
 
     call s:reapply_props()
@@ -873,9 +804,7 @@ function! s:reapply_props() abort
     syntax match BexHiddenFile /\%(^\s*\|\s\)\zs\.[^/]\+$/
 endfunction
 
-" ============================================================================
 " Changes Panel
-" ============================================================================
 
 function! s:ParseBuffer() abort
     let l:current_win_id = win_getid()
@@ -937,7 +866,7 @@ function! s:ParseBuffer() abort
     for [l:dir, l:state] in items(g:bex_cache)
         let l:path_header = stridx(l:dir, l:home) == 0 ? '~/' . l:dir[len(l:home)+1:] : l:dir
         call add(l:lines, l:path_header)
-        call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesHeader'})
+        call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesDir'})
         let l:lnum += 1
 
         for l:del in get(l:state, 'delete', [])
@@ -1005,16 +934,10 @@ function! s:ParseBuffer() abort
     call win_gotoid(l:current_win_id)
 endfunction
 
-" ============================================================================
 " Helpers
-" ============================================================================
 
 function! s:handle_bounds() abort
     call bex#UpdateVirtualDirectory(b:bex_dir)
-endfunction
-
-function! s:ensure_empty_line() abort
-    if !empty(trim(getline(line('$')))) | call append(line('$'), '') | endif
 endfunction
 
 function! s:relative_time(ftime) abort
