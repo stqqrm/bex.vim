@@ -2,25 +2,33 @@
 " Description: Cleaned, State-Driven ID-Tracked File Browser Engine
 
 " --- Highlights ---
-highlight Normal						ctermfg=White
-highlight default BexHeader				ctermfg=Yellow cterm=bold gui=bold
-highlight default BexInfo				guifg=#404040
-highlight default BexID					guifg=#404040
-highlight default BexDir				ctermfg=Yellow cterm=bold
-highlight default BexHiddenID			guifg=#252525
-highlight default BexHiddenDir			ctermfg=Yellow cterm=bold
-"highlight default BexHiddenFile			ctermfg=White
-highlight default BexVisible			ctermfg=Green cterm=bold gui=bold
-highlight default BexHidden				ctermfg=Red cterm=bold gui=bold
-highlight default BexChangesDir			ctermfg=Yellow  cterm=bold gui=bold
-highlight default BexChangesDel			ctermfg=Red   cterm=bold gui=bold
-highlight default BexChangesAdd			ctermfg=Green
-highlight default BexChangesRename		ctermfg=Cyan cterm=bold gui=bold
-highlight default BexChangesMoveFrom	ctermfg=DarkGrey
-highlight default BexChangesMoveTo		ctermfg=Magenta  cterm=bold gui=bold
-highlight default BexChangesCopy		ctermfg=Blue
-highlight default BexDotfilesOn			ctermfg=Green cterm=bold gui=bold
-highlight default BexDotfilesOff		ctermfg=Red   cterm=bold gui=bold
+function! s:redefine_highlights() abort
+    highlight default Normal                ctermfg=White
+    highlight default BexHeader             ctermfg=Yellow cterm=bold gui=bold
+    highlight default BexInfo               guifg=#404040
+    highlight default BexID                 guifg=#404040
+    highlight default BexDir                ctermfg=Yellow cterm=bold
+    highlight default BexHiddenID           guifg=#252525
+    highlight default BexHiddenDir          ctermfg=Yellow cterm=bold
+    highlight default BexHiddenFile         ctermfg=White
+    highlight default BexVisible            ctermfg=Green cterm=bold gui=bold
+    highlight default BexHidden             ctermfg=Red cterm=bold gui=bold
+    highlight default BexChangesDir         ctermfg=Yellow cterm=bold gui=bold
+    highlight default BexChangesDel         ctermfg=Red cterm=bold gui=bold
+    highlight default BexChangesAdd         ctermfg=Green
+    highlight default BexChangesRename      ctermfg=Cyan cterm=bold gui=bold
+    highlight default BexChangesMoveFrom    ctermfg=DarkGrey
+    highlight default BexChangesMoveTo      ctermfg=Magenta cterm=bold gui=bold
+    highlight default BexChangesCopy        ctermfg=Blue
+    highlight default BexDotfilesOn         ctermfg=Green cterm=bold gui=bold
+    highlight default BexDotfilesOff        ctermfg=Red cterm=bold gui=bold
+endfunction
+call s:redefine_highlights()
+
+augroup bex_reload
+    autocmd!
+    autocmd ColorScheme * call s:redefine_highlights()
+augroup END
 
 " --- Global State Initializations ---
 let g:bex_id_counter        = get(g:, 'bex_id_counter', 0)
@@ -33,7 +41,6 @@ let g:bex_changes_show_ids  = get(g:, 'bex_changes_show_ids', 0)
 let g:bex_cursor_pos        = get(g:, 'bex_cursor_pos', {})
 let g:bex_changes_bufnr     = get(g:, 'bex_changes_bufnr', -1)
 
-
 " Public API
 
 function! bex#Open(path) abort
@@ -42,8 +49,8 @@ function! bex#Open(path) abort
     if !isdirectory(l:dir) | echoerr 'bex: Directory not found: ' . l:dir | return | endif
 
     execute (&modified ? 'split ' : 'edit ') . fnameescape('bex://' . l:dir)
-    setlocal buftype=acwrite bufhidden=wipe noswapfile nobuflisted
-    setlocal filetype=bex nonumber norelativenumber nowrap
+    setlocal buftype=acwrite bufhidden=hide noswapfile nobuflisted
+    setlocal filetype=bex nonumber norelativenumber nowrap noeol nofixeol
     let b:bex_dir = l:dir
 
     call matchadd('BexDotfilesOn',  '\cdotfiles\s*[=:]\s*on')
@@ -57,14 +64,59 @@ function! bex#Open(path) abort
 
     augroup bex_events
         autocmd! * <buffer>
-        autocmd VimResized        <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:render() | call s:reapply_props() | call s:ParseBuffer()
-        autocmd BufWriteCmd       <buffer> call s:on_write()
-        autocmd BufLeave          <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | setlocal nomodified
-        autocmd BufUnload         <buffer> call s:on_unload()
-        autocmd QuitPre           <buffer> call s:on_quit()
+        autocmd VimResized                <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:render() | call s:reapply_props() | call s:ParseBuffer()
+        autocmd BufWriteCmd               <buffer> call s:on_write()
+        autocmd BufEnter                  <buffer> call s:show_changes_panel()
+        autocmd BufLeave                  <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:hide_changes_panel()
+        autocmd BufUnload                 <buffer> call s:on_unload()
+        autocmd QuitPre                   <buffer> call s:on_quit()
         autocmd TextChanged,TextChangedI  <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props()
         autocmd CursorMoved,CursorMovedI  <buffer> call s:handle_bounds()
+        autocmd ColorScheme               <buffer> call s:redefine_highlights() | call s:reapply_props() | call s:render()
+        autocmd SourcePost                <buffer> call bex#SafeRerender()
     augroup END
+endfunction
+
+function! bex#Toggle() abort
+    for l:buf in range(1, bufnr('$'))
+        if getbufvar(l:buf, '&filetype') ==# 'bex' && bufexists(l:buf)
+            call setbufvar(l:buf, '&modified', 0)
+            execute 'buffer ' . l:buf
+            return
+        endif
+    endfor
+    call bex#Open('')
+endfunction
+
+function! bex#Reload(...) abort
+    let l:path = get(a:, 1, '')
+    " Reset all global state
+    let g:bex_cache      = {}
+    let g:bex_snapshots  = {}
+    let g:bex_id_counter = 0
+    let g:bex_path_ids   = {}
+    let g:bex_cursor_pos = {}
+
+    " Close changes panel if open
+    if g:bex_changes_bufnr != -1 && bufwinnr(g:bex_changes_bufnr) != -1
+        execute bufwinnr(g:bex_changes_bufnr) . 'close'
+    endif
+    let g:bex_changes_bufnr = -1
+
+    " Find and wipe all bex buffers, then open fresh
+    let l:dir = ''
+    for l:buf in range(1, bufnr('$'))
+        if getbufvar(l:buf, '&filetype') ==# 'bex' && bufexists(l:buf)
+            let l:dir = getbufvar(l:buf, 'bex_dir', '')
+            call setbufvar(l:buf, '&modified', 0)
+            execute 'bwipeout! ' . l:buf
+            break
+        endif
+    endfor
+
+    " Prefer explicit path, then previous bex dir, then cwd
+    let l:open = !empty(l:path) ? l:path : (!empty(l:dir) ? l:dir : '')
+    call bex#Open(l:open)
 endfunction
 
 function! bex#Navigate(path) abort
@@ -87,7 +139,6 @@ endfunction
 
 function! bex#ToggleHidden() abort
     let g:bex_toggling = 1
-    " Cache before toggle wipes buffer
     let l:plan = s:QueryBuffer()
     let l:has_changes = !empty(l:plan.delete) || !empty(l:plan.rename)
         \ || !empty(l:plan.entries) || !empty(l:plan.move_to)
@@ -120,9 +171,19 @@ function! bex#OnSelect() abort
     if l:item.is_dir
         call bex#Navigate(l:item.path)
     else
-        call bex#UpdateVirtualDirectory(b:bex_dir)
+        let l:bex_buf = bufnr('%')
+        let l:path = l:item.path
+        if winnr('$') == 1
+            leftabove vsplit
+            wincmd p
+        endif
         setlocal nomodified
-        execute 'edit ' . fnameescape(l:item.path)
+        wincmd p
+        execute 'edit ' . fnameescape(l:path)
+        let l:bex_win = bufwinnr(l:bex_buf)
+        if l:bex_win != -1
+            execute l:bex_win . 'close'
+        endif
     endif
 endfunction
 
@@ -147,6 +208,10 @@ function! bex#UpdateVirtualDirectory(path) abort
     call s:ParseBuffer()
 endfunction
 
+function! bex#RevertChangeUnderCursor() abort
+    call s:revert_change_under_cursor()
+endfunction
+
 " Buffer Query & State
 
 function! s:QueryBuffer() abort
@@ -163,7 +228,6 @@ function! s:QueryBuffer() abort
         if !empty(trim(l:line)) | call add(l:lines, l:line) | endif
     endfor
 
-    " Count ID occurrences to catch copies/duplications within the same directory
     let l:id_counts = {}
     for l:line in l:lines
         let l:id = matchstr(l:line, '^\/[0-9a-fA-F]\+')
@@ -182,8 +246,6 @@ function! s:QueryBuffer() abort
             let l:current_ids[l:id] = l:name
             if has_key(b:bex_snapshot, l:id)
                 let l:old_name = b:bex_snapshot[l:id].name . (b:bex_snapshot[l:id].is_dir ? '/' : '')
-                " If ID is duplicated in the same directory, treat non-original
-                " occurrences as copy targets; skip the original name (it's the source)
                 if get(l:id_counts, l:id, 0) > 1
                     if l:name !=# l:old_name
                         call add(l:state.move_to, {'id': l:id, 'name': l:name})
@@ -199,7 +261,6 @@ function! s:QueryBuffer() abort
         endif
     endfor
 
-    " Only delete if the ID dropped to 0 occurrences completely
     for l:id in keys(b:bex_snapshot)
         if !has_key(l:current_ids, l:id)
             call add(l:state.delete, {'id': l:id, 'name': b:bex_snapshot[l:id].name})
@@ -218,7 +279,6 @@ function! s:validate_all() abort
     for [l:dir, l:state] in items(g:bex_cache)
         let l:sep = (l:dir ==# '/' || l:dir ==# '\') ? '' : '/'
 
-        " --- Rename destination conflicts ---
         for l:ren in l:state.rename
             if !has_key(l:state.snapshot, l:ren.id) | continue | endif
             let l:dest = fnamemodify(l:state.snapshot[l:ren.id].path, ':h')
@@ -238,7 +298,6 @@ function! s:validate_all() abort
             endif
         endfor
 
-        " --- Move / copy: missing sources and destination conflicts ---
         for l:mov in l:state.move_to
             let l:dst = l:dir . l:sep . substitute(l:mov.name, '/$', '', '')
             let l:src = ''
@@ -273,13 +332,11 @@ function! s:validate_all() abort
                     endif
                 endfor
                 if !l:vacating
-                    " FIX: Instead of treating as hard abort error, add to soft conflicts to prompt user
                     call add(l:conflicts, {'dir': l:dir, 'ent': l:mov.name, 'path': l:dst})
                 endif
             endif
         endfor
 
-        " --- Create conflicts: soft, prompt user ---
         for l:ent in l:state.entries
             let l:path = l:dir . l:sep . substitute(l:ent, '/$', '', '')
             if filereadable(l:path) || isdirectory(l:path)
@@ -312,10 +369,8 @@ function! s:on_write() abort
     call bex#UpdateVirtualDirectory(b:bex_dir)
     if empty(g:bex_cache) | setlocal nomodified | return | endif
 
-    " 1. Pre-flight validation
     let l:result = s:validate_all()
 
-    " 2. Hard errors abort immediately
     if !empty(l:result.errors)
         echohl ErrorMsg
         for l:e in l:result.errors
@@ -325,7 +380,6 @@ function! s:on_write() abort
         return
     endif
 
-    " 3. Soft conflicts: files that would be overwritten on create
     if !empty(l:result.conflicts)
         echo 'bex: Files already exist and would be replaced:'
         for l:c in l:result.conflicts | echo '  ' . l:c.path | endfor
@@ -350,7 +404,6 @@ function! s:on_write() abort
         endif
     endif
 
-    " 4. Confirm deletions
     let l:all_dels = []
     for [l:dir, l:state] in items(g:bex_cache)
         for l:del in l:state.delete
@@ -361,7 +414,8 @@ function! s:on_write() abort
                 endfor
             endfor
             if !l:is_moved
-                call add(l:all_dels, l:dir . '/' . l:del.name)
+                let l:del_display = l:dir . '/' . l:del.name . (has_key(l:state.snapshot, l:del.id) && l:state.snapshot[l:del.id].is_dir ? '/' : '')
+                call add(l:all_dels, l:del_display)
             endif
         endfor
     endfor
@@ -374,12 +428,10 @@ function! s:on_write() abort
         if l:ans !=# 'y' && l:ans !=# 'Y' | setlocal nomodified | return | endif
     endif
 
-    " 5. Apply
     call s:apply_all()
 endfunction
 
 function! s:apply_all() abort
-    " Pass 1: Renames (via tmp to avoid same-dir swap collisions)
     for [l:dir, l:state] in items(g:bex_cache)
         let l:tmps = []
         for l:ren in l:state.rename
@@ -400,14 +452,11 @@ function! s:apply_all() abort
         endfor
     endfor
 
-    " Pass 2: Moves, copies, creates, deletes
     for [l:dir, l:state] in items(g:bex_cache)
         let l:sep = (l:dir ==# '/' || l:dir ==# '\') ? '' : '/'
 
-        " --- Moves / Copies ---
         for l:mov in l:state.move_to
             let l:src = ''
-            " Check if renamed in pass 1
             for [l:cdir, l:cstate] in items(g:bex_cache)
                 for l:ren in l:cstate.rename
                     if l:ren.id ==# l:mov.id
@@ -422,7 +471,6 @@ function! s:apply_all() abort
                 endfor
                 if !empty(l:src) | break | endif
             endfor
-            " Fall back to snapshot
             if empty(l:src)
                 for [l:sdir, l:ssnap] in items(g:bex_snapshots)
                     if has_key(l:ssnap, l:mov.id)
@@ -462,7 +510,6 @@ function! s:apply_all() abort
             endif
         endfor
 
-        " --- Deletes ---
         for l:del in l:state.delete
             let l:still_exists = 0
             for [l:tdir, l:tstate] in items(g:bex_cache)
@@ -475,7 +522,6 @@ function! s:apply_all() abort
             if !has_key(l:state.snapshot, l:del.id) | continue | endif
             let l:p = l:state.snapshot[l:del.id].path
 
-            " Skip if a pass-1 rename already landed here
             let l:renamed_onto = 0
             for [l:rdir, l:rstate] in items(g:bex_cache)
                 for l:ren in l:rstate.rename
@@ -491,9 +537,7 @@ function! s:apply_all() abort
             endfor
             if l:renamed_onto | continue | endif
 
-            " Skip if a move/copy from another id is landing at this exact path
             let l:copy_landing = 0
-            let l:del_name = l:state.snapshot[l:del.id].name
             for [l:tdir, l:tstate] in items(g:bex_cache)
                 let l:tsep = (l:tdir ==# '/' || l:tdir ==# '\') ? '' : '/'
                 for l:m in l:tstate.move_to
@@ -513,7 +557,6 @@ function! s:apply_all() abort
             endif
         endfor
 
-        " --- Creates ---
         for l:ent in l:state.entries
             let l:path = l:dir . l:sep . substitute(l:ent, '/$', '', '')
             if l:ent =~# '/$'
@@ -528,7 +571,6 @@ function! s:apply_all() abort
         endfor
     endfor
 
-    " Reset state and re-render
     let g:bex_cache      = {}
     let g:bex_snapshots  = {}
     let g:bex_id_counter = 0
@@ -555,7 +597,6 @@ endfunction
 function! s:on_quit() abort
     let l:buf = bufnr('%')
 
-    " Always close changes panel
     if g:bex_changes_bufnr != -1 && bufwinnr(g:bex_changes_bufnr) != -1
         execute bufwinnr(g:bex_changes_bufnr) . 'close'
     endif
@@ -619,22 +660,18 @@ function! s:revert_change_under_cursor() abort
     let l:line = getline('.')
     let l:id = matchstr(l:line, '\/[0-9a-fA-F]\+')
 
-    " Handle new file/dir entries (lines like '   + name' with no ID)
     if empty(l:id)
-        " Strip leading sigil ('+ ', '- ', '~ ', '* ') and optional '(new) ' marker
         let l:entry_name = matchstr(l:line, '^\s*[+~*-]\s\+\%((\w\+)\s\+\)\?\zs.*')
         if empty(l:entry_name) | return | endif
 
-        " Walk upward in the changes panel to find the directory header this entry belongs to
         let l:owner_dir = ''
         let l:home = expand('$HOME')
         for l:ln in range(l:save_lnum - 1, 1, -1)
             let l:hdr = trim(getline(l:ln))
             if empty(l:hdr) | continue | endif
-            " Entry lines start with a sigil (indented); header lines do not
             if l:hdr =~# '^[+~*-]\s' | continue | endif
-            " Expand leading ~/ back to $HOME
             let l:expanded = substitute(l:hdr, '^\~/', l:home . '/', '')
+            let l:expanded = substitute(l:expanded, '[/\\]$', '', '')
             if has_key(g:bex_cache, l:expanded)
                 let l:owner_dir = l:expanded
             endif
@@ -655,9 +692,9 @@ function! s:revert_change_under_cursor() abort
     endif
 
     for [l:dir, l:state] in items(g:bex_cache)
-        let l:state.delete   = filter(copy(l:state.delete),   {_, v -> v.id !=# l:id})
-        let l:state.rename   = filter(copy(l:state.rename),   {_, v -> v.id !=# l:id})
-        let l:state.move_to  = filter(copy(l:state.move_to),  {_, v -> v.id !=# l:id})
+        let l:state.delete  = filter(copy(l:state.delete),  {_, v -> v.id !=# l:id})
+        let l:state.rename  = filter(copy(l:state.rename),  {_, v -> v.id !=# l:id})
+        let l:state.move_to = filter(copy(l:state.move_to), {_, v -> v.id !=# l:id})
         let g:bex_cache[l:dir] = l:state
         if empty(l:state.delete) && empty(l:state.rename)
             \ && empty(l:state.entries) && empty(l:state.move_to)
@@ -665,36 +702,21 @@ function! s:revert_change_under_cursor() abort
         endif
     endfor
 
-    call s:ParseBuffer()
-
-    for l:buf in range(1, bufnr('$'))
-        if getbufvar(l:buf, '&filetype') ==# 'bex'
-            let l:bex_win = bufwinnr(l:buf)
-            if l:bex_win != -1
-                let l:cur_win = winnr()
-                execute l:bex_win . 'wincmd w'
-                call s:render()
-                execute l:cur_win . 'wincmd w'
-            endif
-        endif
-    endfor
-
-    " If the line no longer exists or is empty, move up
-    let l:new_last = line('$')
-    if l:save_lnum > l:new_last || empty(trim(getline(l:save_lnum)))
-        call cursor(max([1, l:save_lnum - 1]), 1)
-    else
-        call cursor(l:save_lnum, 1)
-    endif
+    call s:revert_finish(l:save_lnum)
 endfunction
 
-" Shared post-revert refresh used by both ID-based and entry-based paths.
 function! s:revert_finish(save_lnum) abort
     call s:ParseBuffer()
 
     for l:buf in range(1, bufnr('$'))
         if getbufvar(l:buf, '&filetype') ==# 'bex'
             let l:bex_win = bufwinnr(l:buf)
+            if l:bex_win == -1
+                noautocmd leftabove vertical split
+                call setbufvar(l:buf, '&modified', 0)
+                noautocmd execute 'buffer ' . l:buf
+                let l:bex_win = bufwinnr(l:buf)
+            endif
             if l:bex_win != -1
                 let l:cur_win = winnr()
                 execute l:bex_win . 'wincmd w'
@@ -736,38 +758,23 @@ function! s:restore_cached_buffer() abort
         for l:lnum in range(1, line('$'))
             if getline(l:lnum) ==# l:expected | let l:found = 1 | break | endif
         endfor
-        if !l:found
-            let l:last = line('$')
-            if l:last > 1 && empty(trim(getline(l:last)))
-                call append(l:last - 1, l:expected)
-            else
-                call append(l:last, l:expected)
-            endif
-        endif
+        if !l:found | call append(line('$'), l:expected) | endif
     endfor
 
     for l:ent in l:state.entries
         let l:found = 0
         for l:lnum in range(1, line('$')) | if getline(l:lnum) ==# l:ent | let l:found = 1 | break | endif | endfor
-        if !l:found
-            let l:last = line('$')
-            if l:last > 1 && empty(trim(getline(l:last)))
-                call append(l:last - 1, l:ent)
-            else
-                call append(l:last, l:ent)
-            endif
-        endif
+        if !l:found | call append(line('$'), l:ent) | endif
     endfor
 
-    " Ensure exactly one trailing empty line and preserve line 1 header space
-    while line('$') > 1 && empty(trim(getline(line('$')))) && empty(trim(getline(line('$') - 1)))
+    " Strip leading empty lines
+    while line('$') > 1 && empty(trim(getline(1)))
+        silent execute '1d _'
+    endwhile
+    " Strip all trailing empty lines
+    while line('$') > 1 && empty(trim(getline(line('$'))))
         silent execute line('$') . 'd _'
     endwhile
-    if line('$') < 1
-        call append(line('$'), '')
-    elseif !empty(trim(getline(line('$'))))
-        call append(line('$'), '')
-    endif
 
     setlocal nomodified
 endfunction
@@ -778,8 +785,8 @@ function! s:update_winbar() abort
     let l:hl_right = g:bex_show_hidden ? '%#BexDotfilesOn#' : '%#BexDotfilesOff#'
     let l:right = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
     let l:bar = '%#BexHeader#' . escape(l:left, ' \') . '%=' . l:hl_right . l:right . '%#BexHeader#'
-    
-	setlocal laststatus=2
+
+    setlocal laststatus=2
     let &l:statusline = l:bar
 endfunction
 
@@ -798,13 +805,8 @@ function! s:reapply_props() abort
     endfor
 
     syntax clear
-    " 1. Standard IDs for normal files/directories
-    syntax match BexID /^\/[0-9a-fA-F]\+\ze\s/
-    
-    " 2. Match IDs for hidden files/directories (ID followed by space and a dotfile)
+    syntax match BexID       /^\/[0-9a-fA-F]\+\ze\s/
     syntax match BexHiddenID /^\/[0-9a-fA-F]\+\ze\s\+\.[^/]/
-
-    " 3. File and directory text matches
     syntax match BexDir        /\%(\/[0-9a-fA-F]\+\s\+\|\s*\)\zs[^/].\+\/$/
     syntax match BexDir        /\zs\S\+\/$/
     syntax match BexHiddenDir  /\zs\.[^/]*\/$/
@@ -812,6 +814,27 @@ function! s:reapply_props() abort
 endfunction
 
 " Changes Panel
+
+function! s:show_changes_panel() abort
+    if empty(g:bex_cache) | return | endif
+    call s:ParseBuffer()
+endfunction
+
+function! s:hide_changes_panel() abort
+    if g:bex_changes_bufnr == -1 | return | endif
+    if bufnr('%') == g:bex_changes_bufnr | return | endif
+    let l:bex_visible = 0
+    for l:buf in range(1, bufnr('$'))
+        if getbufvar(l:buf, '&filetype') ==# 'bex' && bufwinnr(l:buf) != -1
+            let l:bex_visible = 1 | break
+        endif
+    endfor
+    if l:bex_visible | return | endif
+    let l:win = bufwinnr(g:bex_changes_bufnr)
+    if l:win != -1
+        execute l:win . 'close'
+    endif
+endfunction
 
 function! s:ParseBuffer() abort
     let l:current_win_id = win_getid()
@@ -830,21 +853,22 @@ function! s:ParseBuffer() abort
         noautocmd rightbelow vertical 30vnew
         let g:bex_changes_bufnr = bufnr('%')
         let l:cbuf = g:bex_changes_bufnr
-        setlocal buftype=nofile bufhidden=wipe noswapfile nobuflisted
+        setlocal buftype=nofile bufhidden=hide noswapfile nobuflisted
         setlocal nonumber norelativenumber nowrap
         setlocal filetype=bex_changes
         setlocal statusline=\ changes
         augroup bex_changes_events
             autocmd! * <buffer>
             autocmd BufEnter   <buffer> let g:bex_changes_show_ids = 1 | call s:ParseBuffer()
-            autocmd BufLeave   <buffer> let g:bex_changes_show_ids = 0 | call s:ParseBuffer()
+            autocmd BufLeave   <buffer> let g:bex_changes_show_ids = 0
             autocmd BufWipeout <buffer> let g:bex_changes_bufnr = -1
         augroup END
-        nnoremap <buffer> <silent> <CR> :call <SID>revert_change_under_cursor()<CR>
+        nnoremap <buffer> <silent> <CR> :call bex#RevertChangeUnderCursor()<CR>
         call win_gotoid(l:current_win_id)
     elseif bufwinnr(l:cbuf) == -1
         noautocmd rightbelow vertical 30vnew
-        execute 'noautocmd buffer ' . l:cbuf
+        noautocmd execute 'buffer ' . l:cbuf
+        if bufwinnr(l:cbuf) == -1 | close | call win_gotoid(l:current_win_id) | return | endif
         call win_gotoid(l:current_win_id)
     endif
 
@@ -878,7 +902,8 @@ function! s:ParseBuffer() abort
 
         for l:del in get(l:state, 'delete', [])
             let l:id_prefix = g:bex_changes_show_ids ? l:del.id . ' ' : ''
-            call add(l:lines, '   - ' . l:id_prefix . l:del.name)
+            let l:del_name = l:del.name . (has_key(l:state.snapshot, l:del.id) && l:state.snapshot[l:del.id].is_dir ? '/' : '')
+            call add(l:lines, '   - ' . l:id_prefix . l:del_name)
             call add(l:highlights, {'lnum': l:lnum, 'hl': has_key(l:global_placements, l:del.id) ? 'BexChangesMoveFrom' : 'BexChangesDel'})
             let l:lnum += 1
         endfor
@@ -942,6 +967,18 @@ function! s:ParseBuffer() abort
 endfunction
 
 " Helpers
+
+function! bex#SafeRerender() abort
+    if !bufexists(bufnr('%')) | return | endif
+    if mode() !~# '^n' | return | endif
+    try
+        setlocal nonumber norelativenumber nowrap noeol nofixeol
+        call s:redefine_highlights()
+        call s:reapply_props()
+        call s:render()
+    catch
+    endtry
+endfunction
 
 function! s:handle_bounds() abort
     call bex#UpdateVirtualDirectory(b:bex_dir)
