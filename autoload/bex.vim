@@ -1,35 +1,6 @@
 " File: autoload/bex.vim
 " Description: Cleaned, State-Driven ID-Tracked File Browser Engine
 
-" --- Highlights ---
-function! s:redefine_highlights() abort
-    highlight default Normal                ctermfg=White
-    highlight default BexHeader             ctermfg=Yellow cterm=bold gui=bold
-    highlight default BexInfo               guifg=#404040
-    highlight default BexID                 guifg=#404040
-    highlight default BexDir                ctermfg=Yellow cterm=bold
-    highlight default BexHiddenID           guifg=#252525
-    highlight default BexHiddenDir          ctermfg=Yellow cterm=bold
-    highlight default BexHiddenFile         ctermfg=White
-    highlight default BexVisible            ctermfg=Green cterm=bold gui=bold
-    highlight default BexHidden             ctermfg=Red cterm=bold gui=bold
-    highlight default BexChangesDir         ctermfg=Yellow cterm=bold gui=bold
-    highlight default BexChangesDel         ctermfg=Red cterm=bold gui=bold
-    highlight default BexChangesAdd         ctermfg=Green
-    highlight default BexChangesRename      ctermfg=Cyan cterm=bold gui=bold
-    highlight default BexChangesMoveFrom    ctermfg=DarkGrey
-    highlight default BexChangesMoveTo      ctermfg=Magenta cterm=bold gui=bold
-    highlight default BexChangesCopy        ctermfg=Blue
-    highlight default BexDotfilesOn         ctermfg=Green cterm=bold gui=bold
-    highlight default BexDotfilesOff        ctermfg=Red cterm=bold gui=bold
-endfunction
-call s:redefine_highlights()
-
-augroup bex_reload
-    autocmd!
-    autocmd ColorScheme * call s:redefine_highlights()
-augroup END
-
 " --- Global State Initializations ---
 let g:bex_id_counter        = get(g:, 'bex_id_counter', 0)
 let g:bex_cache             = get(g:, 'bex_cache', {})
@@ -66,13 +37,13 @@ function! bex#Open(path) abort
         autocmd! * <buffer>
         autocmd VimResized                <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:render() | call s:reapply_props() | call s:ParseBuffer()
         autocmd BufWriteCmd               <buffer> call s:on_write()
-        autocmd BufEnter                  <buffer> call s:show_changes_panel()
+        autocmd BufEnter                  <buffer> call s:show_changes_panel() | call s:reapply_props()
         autocmd BufLeave                  <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:hide_changes_panel()
         autocmd BufUnload                 <buffer> call s:on_unload()
         autocmd QuitPre                   <buffer> call s:on_quit()
         autocmd TextChanged,TextChangedI  <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props()
         autocmd CursorMoved,CursorMovedI  <buffer> call s:handle_bounds()
-        autocmd ColorScheme               <buffer> call s:redefine_highlights() | call s:reapply_props() | call s:render()
+        autocmd ColorScheme               <buffer> call s:reapply_props() | call s:render()
         autocmd SourcePost                <buffer> call bex#SafeRerender()
     augroup END
 endfunction
@@ -973,7 +944,6 @@ function! bex#SafeRerender() abort
     if mode() !~# '^n' | return | endif
     try
         setlocal nonumber norelativenumber nowrap noeol nofixeol
-        call s:redefine_highlights()
         call s:reapply_props()
         call s:render()
     catch
