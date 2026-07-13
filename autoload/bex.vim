@@ -28,6 +28,7 @@ function! bex#Open(path) abort
     call matchadd('BexDotfilesOff', '\cdotfiles\s*[=:]\s*off')
 
     nnoremap <buffer> <silent> . :call bex#ToggleHidden()<CR>
+    nnoremap <buffer> <silent> <CR> :call bex#OnSelect()<CR>
 
     call s:render()
     call cursor(1, 1)
@@ -90,10 +91,18 @@ function! bex#Reload(...) abort
     call bex#Open(l:open)
 endfunction
 
-function! bex#Navigate(path) abort
+function! bex#Navigate(path, ...) abort
+    " Optional a:1 = allow_virtual (1 to permit navigating into a
+    " directory that doesn't exist on disk yet, e.g. a freshly typed
+    " entry the user is about to create).
+    let l:allow_virtual = get(a:, 1, 0)
+
     let l:dir = fnamemodify(a:path, ':p')
     let l:dir = len(l:dir) > 1 ? substitute(l:dir, '[/\\]$', '', '') : l:dir
-    if !isdirectory(l:dir) | echoerr 'bex: Directory not found: ' . l:dir | return | endif
+    if !isdirectory(l:dir) && !l:allow_virtual
+        echoerr 'bex: Directory not found: ' . l:dir
+        return
+    endif
 
     let g:bex_cursor_pos[b:bex_dir] = getcurpos()
     call bex#UpdateVirtualDirectory(b:bex_dir)
@@ -126,7 +135,7 @@ function! bex#GoUp() abort
     let l:parent = fnamemodify(b:bex_dir, ':h')
     if l:parent ==# b:bex_dir | echo 'bex: Already at root directory' | return | endif
     let l:prev_name = fnamemodify(b:bex_dir, ':t') . '/'
-    call bex#Navigate(l:parent)
+    call bex#Navigate(l:parent, !isdirectory(l:parent))
     for l:lnum in range(1, line('$'))
         if getline(l:lnum) =~# '\s' . escape(l:prev_name, ' /.\*[]^$~') . '\ze\(\s\|$\)'
             call cursor(l:lnum, 1) | break
@@ -135,27 +144,50 @@ function! bex#GoUp() abort
 endfunction
 
 function! bex#OnSelect() abort
-    let l:match = matchlist(getline('.'), '^\(\/[0-9a-fA-F]\+\)\s\+\(.*\)$')
-    if empty(l:match) || !has_key(b:bex_snapshot, l:match[1]) | return | endif
-    let l:item = b:bex_snapshot[l:match[1]]
+    let l:line = getline('.')
+    let l:match = matchlist(l:line, '^\(\/[0-9a-fA-F]\+\)\s\+\(.*\)$')
 
-    if l:item.is_dir
-        call bex#Navigate(l:item.path)
-    else
-        let l:bex_buf = bufnr('%')
-        let l:path = l:item.path
-        if winnr('$') == 1
-            leftabove vsplit
+    if !empty(l:match) && has_key(b:bex_snapshot, l:match[1])
+        let l:item = b:bex_snapshot[l:match[1]]
+
+        if l:item.is_dir
+            call bex#Navigate(l:item.path)
+        else
+            let l:bex_buf = bufnr('%')
+            let l:path = l:item.path
+            if winnr('$') == 1
+                leftabove vsplit
+                wincmd p
+            endif
+            setlocal nomodified
             wincmd p
+            execute 'edit ' . fnameescape(l:path)
+            let l:bex_win = bufwinnr(l:bex_buf)
+            if l:bex_win != -1
+                execute l:bex_win . 'close'
+            endif
         endif
-        setlocal nomodified
-        wincmd p
-        execute 'edit ' . fnameescape(l:path)
-        let l:bex_win = bufwinnr(l:bex_buf)
-        if l:bex_win != -1
-            execute l:bex_win . 'close'
-        endif
+        return
     endif
+
+    " No tracked ID on this line: if it's a freshly typed directory entry
+    " (e.g. "src/") that doesn't exist on disk yet, enter it as a virtual
+    " directory so files and folders can be staged inside it before
+    " anything is written to disk. Lines that still carry a stale/foreign
+    " ID (matched above but not in b:bex_snapshot) are intentionally left
+    " untouched, same as before.
+    let l:name = trim(l:line)
+    if empty(l:name) || l:name !~# '/$' || l:name =~# '^\/[0-9a-fA-F]\+'
+        return
+    endif
+
+    let l:clean = substitute(l:name, '/\+$', '', '')
+    if empty(l:clean) | return | endif
+
+    let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
+    let l:target = b:bex_dir . l:sep . l:clean
+
+    call bex#Navigate(l:target, !isdirectory(l:target))
 endfunction
 
 function! bex#UpdateVirtualDirectory(path) abort
@@ -176,6 +208,7 @@ function! bex#UpdateVirtualDirectory(path) abort
         setlocal nomodified
     endif
 
+    call s:normalize_cache()
     call s:ParseBuffer()
 endfunction
 
@@ -242,6 +275,89 @@ function! s:QueryBuffer() abort
 endfunction
 
 " File System Application
+
+" If a directory is itself staged for deletion, deletions recorded for its
+" descendants are redundant — deleting the directory already removes them
+" recursively. Prune those descendant delete entries (and drop the cached
+" state for that directory entirely if nothing else is pending there) so
+" the changes panel and the delete pass only ever deal with the top-most
+" deleted directory.
+function! s:prune_redundant_deletes() abort
+    let l:deleted_dirs = []
+    for [l:dir, l:state] in items(g:bex_cache)
+        for l:del in get(l:state, 'delete', [])
+            if has_key(l:state.snapshot, l:del.id) && l:state.snapshot[l:del.id].is_dir
+                call add(l:deleted_dirs, l:state.snapshot[l:del.id].path)
+            endif
+        endfor
+    endfor
+
+    if empty(l:deleted_dirs) | return | endif
+
+    for l:cdir in keys(copy(g:bex_cache))
+        let l:covered = 0
+        for l:parent in l:deleted_dirs
+            if l:cdir ==# l:parent || stridx(l:cdir, l:parent . '/') == 0
+                let l:covered = 1 | break
+            endif
+        endfor
+        if !l:covered | continue | endif
+
+        let l:cstate = g:bex_cache[l:cdir]
+        if empty(l:cstate.delete) | continue | endif
+        let l:cstate.delete = []
+        let g:bex_cache[l:cdir] = l:cstate
+
+        if empty(l:cstate.rename) && empty(l:cstate.entries) && empty(l:cstate.move_to)
+            call remove(g:bex_cache, l:cdir)
+        endif
+    endfor
+endfunction
+
+" A virtual (not-yet-on-disk) directory is only meaningful as long as it is
+" still reachable via an unbroken chain of pending creations, starting from
+" a real directory. If the entry that would have created it (or one of its
+" virtual ancestors) gets deleted from the buffer, it's no longer going to
+" be created and shouldn't be treated as staged.
+function! s:virtual_dir_will_be_created(path) abort
+    let l:parent = fnamemodify(a:path, ':h')
+    if l:parent ==# a:path | return 0 | endif
+    let l:name = fnamemodify(a:path, ':t') . '/'
+
+    if !isdirectory(l:parent) && !s:virtual_dir_will_be_created(l:parent)
+        return 0
+    endif
+
+    if !has_key(g:bex_cache, l:parent) | return 0 | endif
+    let l:pstate = g:bex_cache[l:parent]
+
+    for l:ent in get(l:pstate, 'entries', [])
+        if l:ent ==# l:name | return 1 | endif
+    endfor
+    for l:mov in get(l:pstate, 'move_to', [])
+        if l:mov.name ==# l:name | return 1 | endif
+    endfor
+    return 0
+endfunction
+
+" Drop cached state for any virtual directory (and, transitively, anything
+" staged underneath it) whose creation is no longer pending anywhere.
+function! s:prune_orphaned_virtual_dirs() abort
+    let l:to_remove = []
+    for l:vdir in keys(g:bex_cache)
+        if !isdirectory(l:vdir) && !s:virtual_dir_will_be_created(l:vdir)
+            call add(l:to_remove, l:vdir)
+        endif
+    endfor
+    for l:vdir in l:to_remove
+        call remove(g:bex_cache, l:vdir)
+    endfor
+endfunction
+
+function! s:normalize_cache() abort
+    call s:prune_redundant_deletes()
+    call s:prune_orphaned_virtual_dirs()
+endfunction
 
 function! s:validate_all() abort
     let l:errors = []
@@ -403,6 +519,8 @@ function! s:on_write() abort
 endfunction
 
 function! s:apply_all() abort
+    call s:normalize_cache()
+
     for [l:dir, l:state] in items(g:bex_cache)
         let l:tmps = []
         for l:ren in l:state.rename
@@ -425,6 +543,16 @@ function! s:apply_all() abort
 
     for [l:dir, l:state] in items(g:bex_cache)
         let l:sep = (l:dir ==# '/' || l:dir ==# '\') ? '' : '/'
+
+        " The target directory itself may not exist yet (a virtual
+        " directory staged via bex#OnSelect / bex#Navigate, possibly
+        " several levels deep). mkdir(..., 'p') creates the whole chain
+        " of missing ancestors in one shot and is a no-op if the
+        " directory already exists, so this is safe regardless of the
+        " iteration order of g:bex_cache.
+        if !isdirectory(l:dir) && !filereadable(l:dir)
+            call mkdir(l:dir, 'p')
+        endif
 
         for l:mov in l:state.move_to
             let l:src = ''
@@ -753,12 +881,22 @@ endfunction
 function! s:update_winbar() abort
     let l:home = expand('$HOME')
     let l:left = stridx(b:bex_dir, l:home) == 0 ? '~/' . b:bex_dir[len(l:home)+1:] : b:bex_dir
+    if !isdirectory(b:bex_dir)
+        let l:left .= '  [new]'
+    endif
     let l:hl_right = g:bex_show_hidden ? '%#BexDotfilesOn#' : '%#BexDotfilesOff#'
     let l:right = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
     let l:bar = '%#BexHeader#' . escape(l:left, ' \') . '%=' . l:hl_right . l:right . '%#BexHeader#'
 
-    setlocal laststatus=2
-    let &l:statusline = l:bar
+    " Check if the running Vim/Neovim version supports the top winbar feature
+    if exists('+winbar')
+        setlocal statusline=
+        let &l:winbar = l:bar
+    else
+        " Safe fallback to the bottom statusline for older Vim versions
+        setlocal laststatus=2
+        let &l:statusline = l:bar
+    endif
 endfunction
 
 function! s:reapply_props() abort
@@ -771,7 +909,8 @@ function! s:reapply_props() abort
         let l:id = matchstr(getline(l:lnum), '^\/[0-9a-fA-F]\{8}')
         if empty(l:id) || !has_key(b:bex_snapshot, l:id) | continue | endif
         let l:p = b:bex_snapshot[l:id].path
-        let l:info = printf('%-10s %8s %10s', getfperm(l:p), s:human_size(getfsize(l:p)), s:relative_time(getftime(l:p)))
+        let l:size = b:bex_snapshot[l:id].is_dir ? '' : s:human_size(getfsize(l:p))
+        let l:info = printf('%-10s %8s %10s', getfperm(l:p), l:size, s:relative_time(getftime(l:p)))
         call prop_add(l:lnum, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
     endfor
 
@@ -808,6 +947,8 @@ function! s:hide_changes_panel() abort
 endfunction
 
 function! s:ParseBuffer() abort
+    call s:normalize_cache()
+
     let l:current_win_id = win_getid()
     let l:has_changes = !empty(g:bex_cache)
     let l:cbuf = g:bex_changes_bufnr
