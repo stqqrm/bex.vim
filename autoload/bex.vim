@@ -23,30 +23,32 @@ function! bex#Open(path) abort
     setlocal buftype=acwrite bufhidden=hide noswapfile nobuflisted
     setlocal filetype=bex nonumber norelativenumber nowrap noeol nofixeol
     let b:bex_dir = l:dir
-
-    call matchadd('BexDotfilesOn',  '\cdotfiles\s*[=:]\s*on')
-    call matchadd('BexDotfilesOff', '\cdotfiles\s*[=:]\s*off')
+    let b:bex_header_popup = -1
 
     nnoremap <buffer> <silent> . :call bex#ToggleHidden()<CR>
     nnoremap <buffer> <silent> <CR> :call bex#OnSelect()<CR>
 
     call s:render()
-    call cursor(1, 1)
     call s:ParseBuffer()
 
     augroup bex_events
         autocmd! * <buffer>
-        autocmd VimResized                <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:render() | call s:reapply_props() | call s:ParseBuffer()
+        autocmd VimResized                <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:render() | call s:reapply_props() | call s:ParseBuffer() | call s:position_header_popup()
         autocmd BufWriteCmd               <buffer> call s:on_write()
-        autocmd BufEnter                  <buffer> call s:show_changes_panel() | call s:reapply_props()
+        autocmd BufEnter                  <buffer> call s:show_changes_panel() | call s:reapply_props() | call s:position_header_popup()
         autocmd BufLeave                  <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:hide_changes_panel()
-        autocmd BufUnload                 <buffer> call s:on_unload()
-        autocmd QuitPre                   <buffer> call s:on_quit()
-        autocmd TextChanged,TextChangedI  <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props()
+        autocmd BufWinLeave               <buffer> call s:close_header_popup()
+        autocmd BufUnload                 <buffer> call s:on_unload() | call s:close_header_popup()
+        autocmd QuitPre                   <buffer> call s:on_quit() | call s:close_header_popup()
+        autocmd TextChanged,TextChangedI  <buffer> call s:enforce_spacer() | call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props()
         autocmd CursorMoved,CursorMovedI  <buffer> call s:handle_bounds()
-        autocmd ColorScheme               <buffer> call s:reapply_props() | call s:render()
-        autocmd SourcePost                <buffer> call bex#SafeRerender()
+        autocmd ColorScheme               <buffer> call s:reapply_props() | call s:render() | call s:position_header_popup()
+        autocmd SourcePost                <buffer> call bex#SafeRerender() | call s:position_header_popup()
+        autocmd WinScrolled               <buffer> call s:position_header_popup()
+        autocmd WinEnter                  <buffer> call s:position_header_popup()
     augroup END
+
+    call s:position_header_popup()
 endfunction
 
 function! bex#Toggle() abort
@@ -136,7 +138,7 @@ function! bex#GoUp() abort
     if l:parent ==# b:bex_dir | echo 'bex: Already at root directory' | return | endif
     let l:prev_name = fnamemodify(b:bex_dir, ':t') . '/'
     call bex#Navigate(l:parent, !isdirectory(l:parent))
-    for l:lnum in range(1, line('$'))
+    for l:lnum in range(2, line('$'))
         if getline(l:lnum) =~# '\s' . escape(l:prev_name, ' /.\*[]^$~') . '\ze\(\s\|$\)'
             call cursor(l:lnum, 1) | break
         endif
@@ -228,7 +230,7 @@ function! s:QueryBuffer() abort
         \ }
 
     let l:lines = []
-    for l:line in getline(1, line('$'))
+    for l:line in getline(2, line('$'))
         if !empty(trim(l:line)) | call add(l:lines, l:line) | endif
     endfor
 
@@ -377,6 +379,13 @@ function! s:validate_all() abort
                         for l:d in get(l:state, 'delete', [])
                             if l:d.id ==# l:snap_id | let l:vacating = 1 | break | endif
                         endfor
+                        if !l:vacating
+                            for l:r in get(l:state, 'rename', [])
+                                if l:r.id ==# l:snap_id && l:r.id !=# l:ren.id
+                                    let l:vacating = 1 | break
+                                endif
+                            endfor
+                        endif
                     endif
                 endfor
                 if !l:vacating
@@ -518,6 +527,14 @@ function! s:on_write() abort
     call s:apply_all()
 endfunction
 
+" Move a path using the OS's own move/rename command rather than Vim's
+" rename() builtin. Sets v:shell_error as its normal side effect from
+" system(), matching how copies are checked elsewhere in this file.
+function! s:native_move(src, dst) abort
+    let l:cmd = (has('win32') || has('win64')) ? 'move /Y ' : 'mv '
+    call system(l:cmd . shellescape(a:src) . ' ' . shellescape(a:dst))
+endfunction
+
 function! s:apply_all() abort
     call s:normalize_cache()
 
@@ -526,8 +543,14 @@ function! s:apply_all() abort
         for l:ren in l:state.rename
             if !has_key(l:state.snapshot, l:ren.id) | continue | endif
             let l:old_p = l:state.snapshot[l:ren.id].path
-            let l:tmp_p = fnamemodify(l:old_p, ':h') . '/__tmp__.' . fnamemodify(l:old_p, ':t')
-            if rename(l:old_p, l:tmp_p) != 0
+            " Stage through a collision-safe temp name in the same
+            " directory (keeps the move on the same filesystem) so
+            " chained/swapped renames (A->B, B->A) never clash with each
+            " other mid-flight.
+            let l:tmp_p = fnamemodify(l:old_p, ':h') . '/.bex-tmp-'
+                \ . fnamemodify(tempname(), ':t') . '-' . fnamemodify(l:old_p, ':t')
+            call s:native_move(l:old_p, l:tmp_p)
+            if v:shell_error != 0
                 echoerr 'bex: rename to tmp failed: ' . l:old_p
                 continue
             endif
@@ -535,7 +558,8 @@ function! s:apply_all() abort
             call add(l:tmps, {'tmp': l:tmp_p, 'dest': l:dest})
         endfor
         for l:t in l:tmps
-            if rename(l:t.tmp, l:t.dest) != 0
+            call s:native_move(l:t.tmp, l:t.dest)
+            if v:shell_error != 0
                 echoerr 'bex: rename failed: ' . l:t.tmp . ' -> ' . l:t.dest
             endif
         endfor
@@ -747,11 +771,19 @@ function! s:render() abort
     let g:bex_snapshots[b:bex_dir] = copy(b:bex_snapshot)
 
     silent %delete _
-    call setline(1, l:lines)
+    call setline(1, [''] + l:lines)
+    " Always leave at least one real line under the spacer so the cursor
+    " has somewhere valid to land, even for an empty directory.
+    if line('$') == 1 | call append(1, '') | endif
     setlocal nomodified
 
     call s:reapply_props()
     call s:restore_cached_buffer()
+    call s:position_header_popup()
+
+    if line('.') == 1 && line('$') > 1
+        call cursor(2, 1)
+    endif
 endfunction
 
 function! s:revert_change_under_cursor() abort
@@ -838,13 +870,13 @@ function! s:restore_cached_buffer() abort
     let l:state = g:bex_cache[b:bex_dir]
 
     for l:del in l:state.delete
-        for l:lnum in range(line('$'), 1, -1)
+        for l:lnum in range(line('$'), 2, -1)
             if stridx(getline(l:lnum), l:del.id) == 0 | silent execute l:lnum . 'd _' | break | endif
         endfor
     endfor
 
     for l:ren in l:state.rename
-        for l:lnum in range(1, line('$'))
+        for l:lnum in range(2, line('$'))
             if stridx(getline(l:lnum), l:ren.id) == 0
                 call setline(l:lnum, l:ren.id . ' ' . l:ren.new) | break
             endif
@@ -854,7 +886,7 @@ function! s:restore_cached_buffer() abort
     for l:mov in l:state.move_to
         let l:found = 0
         let l:expected = l:mov.id . ' ' . l:mov.name
-        for l:lnum in range(1, line('$'))
+        for l:lnum in range(2, line('$'))
             if getline(l:lnum) ==# l:expected | let l:found = 1 | break | endif
         endfor
         if !l:found | call append(line('$'), l:expected) | endif
@@ -862,40 +894,118 @@ function! s:restore_cached_buffer() abort
 
     for l:ent in l:state.entries
         let l:found = 0
-        for l:lnum in range(1, line('$')) | if getline(l:lnum) ==# l:ent | let l:found = 1 | break | endif | endfor
+        for l:lnum in range(2, line('$')) | if getline(l:lnum) ==# l:ent | let l:found = 1 | break | endif | endfor
         if !l:found | call append(line('$'), l:ent) | endif
     endfor
 
-    " Strip leading empty lines
-    while line('$') > 1 && empty(trim(getline(1)))
-        silent execute '1d _'
+    " Strip leading empty lines (right after the reserved spacer), keeping
+    " the spacer itself untouched.
+    while line('$') > 2 && empty(trim(getline(2)))
+        silent execute '2d _'
     endwhile
     " Strip all trailing empty lines
-    while line('$') > 1 && empty(trim(getline(line('$'))))
+    while line('$') > 2 && empty(trim(getline(line('$'))))
         silent execute line('$') . 'd _'
     endwhile
+
+    " Always leave at least one editable line beneath the spacer.
+    if line('$') == 1 | call append(1, '') | endif
 
     setlocal nomodified
 endfunction
 
-function! s:update_winbar() abort
+" The header lives in a popup anchored to the window's screen position (not
+" a buffer line and not a winbar), so it can never become stray buffer
+" text and can never be edited or deleted. Buffer line 1 is kept as a
+" permanent blank spacer so the popup has empty space to sit over instead
+" of covering a real entry.
+function! s:enforce_spacer() abort
+    if !exists('b:bex_dir') | return | endif
+    if !empty(getline(1))
+        call append(0, '')
+    endif
+    if line('$') < 2
+        call append(line('$'), '')
+    endif
+endfunction
+
+function! s:close_header_popup() abort
+    if exists('b:bex_header_popup') && b:bex_header_popup > 0
+        call popup_close(b:bex_header_popup)
+    endif
+    let b:bex_header_popup = -1
+endfunction
+
+" Keep the cursor from ever resting on the reserved spacer line, in any
+" mode. In Visual/Visual-block mode this only moves the active end of the
+" selection (cursor()); the anchor end ('v mark) is untouched, so it just
+" clamps how far up a selection can extend rather than cancelling it.
+function! s:lock_cursor() abort
+    if line('.') == 1 && line('$') > 1
+        call cursor(2, 1)
+    endif
+endfunction
+
+function! s:ensure_header_highlights() abort
+    if empty(prop_type_get('BexDotfilesOn'))
+        call prop_type_add('BexDotfilesOn', {'highlight': 'BexDotfilesOn'})
+    endif
+    if empty(prop_type_get('BexDotfilesOff'))
+        call prop_type_add('BexDotfilesOff', {'highlight': 'BexDotfilesOff'})
+    endif
+    " Sane defaults so the on/off state is visibly distinct even without a
+    " colorscheme that defines these groups; 'default' means a user's own
+    " definition always wins.
+    highlight default BexDotfilesOn  ctermfg=Green guifg=#98c379
+    highlight default BexDotfilesOff ctermfg=Red   guifg=#e06c75
+endfunction
+
+function! s:position_header_popup() abort
+    if !exists('*popup_create') | return | endif
+    if !exists('b:bex_dir') || &filetype !=# 'bex' | return | endif
+
+    let l:winid = win_getid()
+    let l:screenpos = win_screenpos(l:winid)
+    if l:screenpos[0] == 0 | return | endif
+
+    call s:ensure_header_highlights()
+
     let l:home = expand('$HOME')
     let l:left = stridx(b:bex_dir, l:home) == 0 ? '~/' . b:bex_dir[len(l:home)+1:] : b:bex_dir
     if !isdirectory(b:bex_dir)
         let l:left .= '  [new]'
     endif
-    let l:hl_right = g:bex_show_hidden ? '%#BexDotfilesOn#' : '%#BexDotfilesOff#'
-    let l:right = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
-    let l:bar = '%#BexHeader#' . escape(l:left, ' \') . '%=' . l:hl_right . l:right . '%#BexHeader#'
+    let l:right    = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
+    let l:right_hl = g:bex_show_hidden ? 'BexDotfilesOn' : 'BexDotfilesOff'
 
-    " Check if the running Vim/Neovim version supports the top winbar feature
-    if exists('+winbar')
-        setlocal statusline=
-        let &l:winbar = l:bar
+    let l:width = max([winwidth(l:winid), strdisplaywidth(l:left) + strdisplaywidth(l:right) + 1])
+    let l:pad   = max([l:width - strdisplaywidth(l:left) - strdisplaywidth(l:right), 1])
+    let l:text  = l:left . repeat(' ', l:pad) . l:right
+
+    " 1-based byte column where the dotfiles segment starts, so only that
+    " part of the line is colored — the rest stays the plain header color.
+    let l:right_col = len(l:left) + l:pad + 1
+    let l:content = [{
+        \ 'text': l:text,
+        \ 'props': [{'col': l:right_col, 'length': len(l:right), 'type': l:right_hl}]
+        \ }]
+
+    let l:opts = {
+        \ 'line': l:screenpos[0],
+        \ 'col': l:screenpos[1],
+        \ 'pos': 'topleft',
+        \ 'minwidth': winwidth(l:winid),
+        \ 'maxwidth': winwidth(l:winid),
+        \ 'wrap': 0,
+        \ 'highlight': 'BexHeader',
+        \ 'zindex': 50,
+        \ }
+
+    if !exists('b:bex_header_popup') || b:bex_header_popup <= 0 || empty(popup_getpos(b:bex_header_popup))
+        let b:bex_header_popup = popup_create(l:content, l:opts)
     else
-        " Safe fallback to the bottom statusline for older Vim versions
-        setlocal laststatus=2
-        let &l:statusline = l:bar
+        call popup_settext(b:bex_header_popup, l:content)
+        call popup_move(b:bex_header_popup, l:opts)
     endif
 endfunction
 
@@ -903,9 +1013,8 @@ function! s:reapply_props() abort
     if empty(prop_type_get('bex_info')) | call prop_type_add('bex_info', {'highlight': 'BexInfo'}) | endif
 
     call prop_clear(1, line('$'))
-    call s:update_winbar()
 
-    for l:lnum in range(1, line('$'))
+    for l:lnum in range(2, line('$'))
         let l:id = matchstr(getline(l:lnum), '^\/[0-9a-fA-F]\{8}')
         if empty(l:id) || !has_key(b:bex_snapshot, l:id) | continue | endif
         let l:p = b:bex_snapshot[l:id].path
@@ -958,6 +1067,7 @@ function! s:ParseBuffer() abort
             execute bufwinnr(l:cbuf) . 'close'
         endif
         call win_gotoid(l:current_win_id)
+        call s:position_header_popup()
         return
     endif
 
@@ -1076,6 +1186,7 @@ function! s:ParseBuffer() abort
     execute 'vertical resize ' . l:max_w
 
     call win_gotoid(l:current_win_id)
+    call s:position_header_popup()
 endfunction
 
 " Helpers
@@ -1092,6 +1203,7 @@ function! bex#SafeRerender() abort
 endfunction
 
 function! s:handle_bounds() abort
+    call s:lock_cursor()
     call bex#UpdateVirtualDirectory(b:bex_dir)
 endfunction
 
