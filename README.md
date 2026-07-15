@@ -33,3 +33,8 @@ let g:bex_header_at_bottom = 1
 
 ```vim
 Plug 'stqqrm/bex.vim'
+```
+
+## Todo
+
+* Add support for .zip, .rar, .7z, .tar
