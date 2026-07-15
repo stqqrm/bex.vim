@@ -7,8 +7,22 @@ A simple ID-tracked file browser for Vim. The name **bex** stands for **Better E
 ## Usage
 
 * Open explorer
+
 ```
-:Bex [path]
+:Bex [OPTION...] [path]
+```
+
+* Options
+
+```
+-r
+    reload buffers
+```
+
+* Configuration
+
+```
+let g:bex_header_at_bottom = 1
 ```
 
 ## Installation

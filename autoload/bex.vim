@@ -11,6 +11,7 @@ let g:bex_toggling          = get(g:, 'bex_toggling', 0)
 let g:bex_changes_show_ids  = get(g:, 'bex_changes_show_ids', 0)
 let g:bex_cursor_pos        = get(g:, 'bex_cursor_pos', {})
 let g:bex_changes_bufnr     = get(g:, 'bex_changes_bufnr', -1)
+let g:bex_header_at_bottom  = get(g:, 'bex_header_at_bottom', 0)
 
 " Public API
 
@@ -138,7 +139,7 @@ function! bex#GoUp() abort
     if l:parent ==# b:bex_dir | echo 'bex: Already at root directory' | return | endif
     let l:prev_name = fnamemodify(b:bex_dir, ':t') . '/'
     call bex#Navigate(l:parent, !isdirectory(l:parent))
-    for l:lnum in range(2, line('$'))
+    for l:lnum in range(s:content_start(), s:content_end())
         if getline(l:lnum) =~# '\s' . escape(l:prev_name, ' /.\*[]^$~') . '\ze\(\s\|$\)'
             call cursor(l:lnum, 1) | break
         endif
@@ -168,6 +169,18 @@ function! bex#OnSelect() abort
             if l:bex_win != -1
                 execute l:bex_win . 'close'
             endif
+
+            " Do this last, and by buffer number rather than s:close_header_popup()'s
+            " b: lookup: the vsplit above briefly opens a second window onto the
+            " bex buffer, whose WinEnter recreates the popup even if we'd already
+            " closed it — and by now the current buffer is the opened file, not
+            " bex, so a plain current-buffer close can't see it anymore either.
+            let l:popup = getbufvar(l:bex_buf, 'bex_header_popup', -1)
+            if l:popup > 0 && exists('*popup_close')
+                call popup_close(l:popup)
+            endif
+            call setbufvar(l:bex_buf, 'bex_header_popup', -1)
+            redraw
         endif
         return
     endif
@@ -230,7 +243,7 @@ function! s:QueryBuffer() abort
         \ }
 
     let l:lines = []
-    for l:line in getline(2, line('$'))
+    for l:line in getline(s:content_start(), s:content_end())
         if !empty(trim(l:line)) | call add(l:lines, l:line) | endif
     endfor
 
@@ -771,19 +784,23 @@ function! s:render() abort
     let g:bex_snapshots[b:bex_dir] = copy(b:bex_snapshot)
 
     silent %delete _
-    call setline(1, [''] + l:lines)
-    " Always leave at least one real line under the spacer so the cursor
-    " has somewhere valid to land, even for an empty directory.
-    if line('$') == 1 | call append(1, '') | endif
+    if g:bex_header_at_bottom
+        call setline(1, l:lines + [''])
+        " Always leave at least one real line above the spacer so the
+        " cursor has somewhere valid to land, even for an empty directory.
+        if line('$') == 1 | call append(0, '') | endif
+    else
+        call setline(1, [''] + l:lines)
+        " Always leave at least one real line under the spacer so the
+        " cursor has somewhere valid to land, even for an empty directory.
+        if line('$') == 1 | call append(1, '') | endif
+    endif
     setlocal nomodified
 
     call s:reapply_props()
     call s:restore_cached_buffer()
     call s:position_header_popup()
-
-    if line('.') == 1 && line('$') > 1
-        call cursor(2, 1)
-    endif
+    call s:lock_cursor()
 endfunction
 
 function! s:revert_change_under_cursor() abort
@@ -868,15 +885,16 @@ endfunction
 function! s:restore_cached_buffer() abort
     if !has_key(g:bex_cache, b:bex_dir) | return | endif
     let l:state = g:bex_cache[b:bex_dir]
+    let l:start = s:content_start()
 
     for l:del in l:state.delete
-        for l:lnum in range(line('$'), 2, -1)
+        for l:lnum in range(s:content_end(), l:start, -1)
             if stridx(getline(l:lnum), l:del.id) == 0 | silent execute l:lnum . 'd _' | break | endif
         endfor
     endfor
 
     for l:ren in l:state.rename
-        for l:lnum in range(2, line('$'))
+        for l:lnum in range(l:start, s:content_end())
             if stridx(getline(l:lnum), l:ren.id) == 0
                 call setline(l:lnum, l:ren.id . ' ' . l:ren.new) | break
             endif
@@ -886,46 +904,95 @@ function! s:restore_cached_buffer() abort
     for l:mov in l:state.move_to
         let l:found = 0
         let l:expected = l:mov.id . ' ' . l:mov.name
-        for l:lnum in range(2, line('$'))
+        for l:lnum in range(l:start, s:content_end())
             if getline(l:lnum) ==# l:expected | let l:found = 1 | break | endif
         endfor
-        if !l:found | call append(line('$'), l:expected) | endif
+        if !l:found | call s:append_content(l:expected) | endif
     endfor
 
     for l:ent in l:state.entries
         let l:found = 0
-        for l:lnum in range(2, line('$')) | if getline(l:lnum) ==# l:ent | let l:found = 1 | break | endif | endfor
-        if !l:found | call append(line('$'), l:ent) | endif
+        for l:lnum in range(l:start, s:content_end()) | if getline(l:lnum) ==# l:ent | let l:found = 1 | break | endif | endfor
+        if !l:found | call s:append_content(l:ent) | endif
     endfor
 
-    " Strip leading empty lines (right after the reserved spacer), keeping
-    " the spacer itself untouched.
-    while line('$') > 2 && empty(trim(getline(2)))
-        silent execute '2d _'
-    endwhile
-    " Strip all trailing empty lines
-    while line('$') > 2 && empty(trim(getline(line('$'))))
-        silent execute line('$') . 'd _'
-    endwhile
-
-    " Always leave at least one editable line beneath the spacer.
-    if line('$') == 1 | call append(1, '') | endif
+    if g:bex_header_at_bottom
+        " Strip leading empty lines (nothing reserved up here in this mode).
+        while line('$') > 2 && empty(trim(getline(1)))
+            silent execute '1d _'
+        endwhile
+        " Strip empty lines sitting between real content and the reserved
+        " trailing spacer, keeping the spacer (the last line) itself.
+        while line('$') > 2 && empty(trim(getline(line('$') - 1)))
+            silent execute (line('$') - 1) . 'd _'
+        endwhile
+        " Always keep exactly one trailing blank spacer line, and at least
+        " one real editable line above it.
+        if line('$') < 2 || !empty(trim(getline(line('$'))))
+            call append(line('$'), '')
+        endif
+    else
+        " Strip leading empty lines (right after the reserved spacer),
+        " keeping the spacer itself untouched.
+        while line('$') > 2 && empty(trim(getline(2)))
+            silent execute '2d _'
+        endwhile
+        " Strip all trailing empty lines
+        while line('$') > 2 && empty(trim(getline(line('$'))))
+            silent execute line('$') . 'd _'
+        endwhile
+        " Always leave at least one editable line beneath the spacer.
+        if line('$') == 1 | call append(1, '') | endif
+    endif
 
     setlocal nomodified
 endfunction
 
+" First and one-past-last real content line. In top mode line 1 is the
+" reserved spacer, so content runs [2, line('$')]. In bottom mode the very
+" last line is the reserved spacer instead, so content runs
+" [1, line('$')-1]. Both bounds are re-evaluated fresh on every call since
+" line('$') changes as lines are added/removed.
+function! s:content_start() abort
+    return g:bex_header_at_bottom ? 1 : 2
+endfunction
+
+function! s:content_end() abort
+    return g:bex_header_at_bottom ? line('$') - 1 : line('$')
+endfunction
+
+" Append a line of real content, keeping it on the correct side of the
+" reserved spacer regardless of header position.
+function! s:append_content(text) abort
+    if g:bex_header_at_bottom
+        call append(line('$') - 1, a:text)
+    else
+        call append(line('$'), a:text)
+    endif
+endfunction
+
 " The header lives in a popup anchored to the window's screen position (not
 " a buffer line and not a winbar), so it can never become stray buffer
-" text and can never be edited or deleted. Buffer line 1 is kept as a
-" permanent blank spacer so the popup has empty space to sit over instead
-" of covering a real entry.
+" text and can never be edited or deleted. One end of the buffer is kept
+" as a permanent blank spacer — line 1 in top mode, the last line in
+" bottom mode — so the popup always has empty space to sit over instead of
+" covering a real entry.
 function! s:enforce_spacer() abort
     if !exists('b:bex_dir') | return | endif
-    if !empty(getline(1))
-        call append(0, '')
-    endif
-    if line('$') < 2
-        call append(line('$'), '')
+    if g:bex_header_at_bottom
+        if !empty(getline(line('$')))
+            call append(line('$'), '')
+        endif
+        if line('$') < 2
+            call append(0, '')
+        endif
+    else
+        if !empty(getline(1))
+            call append(0, '')
+        endif
+        if line('$') < 2
+            call append(line('$'), '')
+        endif
     endif
 endfunction
 
@@ -939,10 +1006,16 @@ endfunction
 " Keep the cursor from ever resting on the reserved spacer line, in any
 " mode. In Visual/Visual-block mode this only moves the active end of the
 " selection (cursor()); the anchor end ('v mark) is untouched, so it just
-" clamps how far up a selection can extend rather than cancelling it.
+" clamps how far a selection can extend rather than cancelling it.
 function! s:lock_cursor() abort
-    if line('.') == 1 && line('$') > 1
-        call cursor(2, 1)
+    if g:bex_header_at_bottom
+        if line('.') == line('$') && line('$') > 1
+            call cursor(line('$') - 1, 1)
+        endif
+    else
+        if line('.') == 1 && line('$') > 1
+            call cursor(2, 1)
+        endif
     endif
 endfunction
 
@@ -990,8 +1063,12 @@ function! s:position_header_popup() abort
         \ 'props': [{'col': l:right_col, 'length': len(l:right), 'type': l:right_hl}]
         \ }]
 
+    let l:row = g:bex_header_at_bottom
+        \ ? l:screenpos[0] + winheight(l:winid) - 1
+        \ : l:screenpos[0]
+
     let l:opts = {
-        \ 'line': l:screenpos[0],
+        \ 'line': l:row,
         \ 'col': l:screenpos[1],
         \ 'pos': 'topleft',
         \ 'minwidth': winwidth(l:winid),
@@ -1014,7 +1091,7 @@ function! s:reapply_props() abort
 
     call prop_clear(1, line('$'))
 
-    for l:lnum in range(2, line('$'))
+    for l:lnum in range(s:content_start(), s:content_end())
         let l:id = matchstr(getline(l:lnum), '^\/[0-9a-fA-F]\{8}')
         if empty(l:id) || !has_key(b:bex_snapshot, l:id) | continue | endif
         let l:p = b:bex_snapshot[l:id].path
