@@ -148,7 +148,7 @@ endfunction
 
 function! bex#OnSelect() abort
     let l:line = getline('.')
-    let l:match = matchlist(l:line, '^\(\/[0-9a-fA-F]\+\)\s\+\(.*\)$')
+    let l:match = matchlist(l:line, '^\(\/[0-9a-zA-Z]\+\)\s\+\(.*\)$')
 
     if !empty(l:match) && has_key(b:bex_snapshot, l:match[1])
         let l:item = b:bex_snapshot[l:match[1]]
@@ -192,7 +192,7 @@ function! bex#OnSelect() abort
     " ID (matched above but not in b:bex_snapshot) are intentionally left
     " untouched, same as before.
     let l:name = trim(l:line)
-    if empty(l:name) || l:name !~# '/$' || l:name =~# '^\/[0-9a-fA-F]\+'
+    if empty(l:name) || l:name !~# '/$' || l:name =~# '^\/[0-9a-zA-Z]\+'
         return
     endif
 
@@ -249,7 +249,7 @@ function! s:QueryBuffer() abort
 
     let l:id_counts = {}
     for l:line in l:lines
-        let l:id = matchstr(l:line, '^\/[0-9a-fA-F]\+')
+        let l:id = matchstr(l:line, '^\/[0-9a-zA-Z]\+')
         if !empty(l:id)
             let l:id_counts[l:id] = get(l:id_counts, l:id, 0) + 1
         endif
@@ -258,8 +258,8 @@ function! s:QueryBuffer() abort
     let l:current_ids = {}
 
     for l:line in l:lines
-        let l:id = matchstr(l:line, '^\/[0-9a-fA-F]\+')
-        let l:name = substitute(l:line, '^\/[0-9a-fA-F]\+\s\+', '', '')
+        let l:id = matchstr(l:line, '^\/[0-9a-zA-Z]\+')
+        let l:name = substitute(l:line, '^\/[0-9a-zA-Z]\+\s\+', '', '')
 
         if !empty(l:id)
             let l:current_ids[l:id] = l:name
@@ -640,7 +640,7 @@ function! s:apply_all() abort
                 if rename(l:src, l:dst) != 0
                     echoerr 'bex: move failed: ' . l:src . ' -> ' . l:dst
                 else
-                    let g:bex_path_ids[l:dst] = str2nr(matchstr(l:mov.id, '[0-9a-fA-F]\+$'), 16)
+                    let g:bex_path_ids[l:dst] = s:decode_id(matchstr(l:mov.id, '[0-9a-zA-Z]\+$'))
                     if has_key(g:bex_path_ids, l:src) | call remove(g:bex_path_ids, l:src) | endif
                 endif
             endif
@@ -761,6 +761,34 @@ endfunction
 
 " Rendering
 
+" IDs are printed as '/' + 4 base62 characters (a-z, A-Z, 0-9 = 62 symbols,
+" 62^4 ≈ 14.7 million distinct values per session) instead of the previous
+" 8-digit hex, so they read shorter on screen while still being effectively
+" collision-free for a single Vim session's g:bex_id_counter.
+let s:bex_id_alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+let s:bex_id_base = len(s:bex_id_alphabet)
+let s:bex_id_len = 4
+
+function! s:encode_id(n) abort
+    let l:n = a:n
+    let l:chars = []
+    for l:i in range(s:bex_id_len)
+        let l:chars = [s:bex_id_alphabet[l:n % s:bex_id_base]] + l:chars
+        let l:n = l:n / s:bex_id_base
+    endfor
+    return join(l:chars, '')
+endfunction
+
+function! s:decode_id(str) abort
+    let l:n = 0
+    for l:c in split(a:str, '\zs')
+        let l:idx = stridx(s:bex_id_alphabet, l:c)
+        if l:idx < 0 | return -1 | endif
+        let l:n = l:n * s:bex_id_base + l:idx
+    endfor
+    return l:n
+endfunction
+
 function! s:render() abort
     let l:sep = (b:bex_dir ==# '/' || b:bex_dir ==# '\') ? '' : '/'
     let l:all = glob(b:bex_dir . l:sep . '*', 0, 1)
@@ -776,7 +804,7 @@ function! s:render() abort
         let g:bex_path_ids[l:p] = get(g:bex_path_ids, l:p, g:bex_id_counter)
         if g:bex_path_ids[l:p] == g:bex_id_counter | let g:bex_id_counter += 1 | endif
 
-        let l:id = printf('/%08x', g:bex_path_ids[l:p])
+        let l:id = '/' . s:encode_id(g:bex_path_ids[l:p])
         let l:lines += [l:id . ' ' . l:name . (isdirectory(l:p) ? '/' : '')]
         let b:bex_snapshot[l:id] = {'name': l:name, 'is_dir': isdirectory(l:p), 'path': l:p}
     endfor
@@ -806,7 +834,7 @@ endfunction
 function! s:revert_change_under_cursor() abort
     let l:save_lnum = line('.')
     let l:line = getline('.')
-    let l:id = matchstr(l:line, '\/[0-9a-fA-F]\+')
+    let l:id = matchstr(l:line, '\/[0-9a-zA-Z]\+')
 
     if empty(l:id)
         let l:entry_name = matchstr(l:line, '^\s*[+~*-]\s\+\%((\w\+)\s\+\)\?\zs.*')
@@ -1092,7 +1120,7 @@ function! s:reapply_props() abort
     call prop_clear(1, line('$'))
 
     for l:lnum in range(s:content_start(), s:content_end())
-        let l:id = matchstr(getline(l:lnum), '^\/[0-9a-fA-F]\{8}')
+        let l:id = matchstr(getline(l:lnum), '^\/[0-9a-zA-Z]\{4}')
         if empty(l:id) || !has_key(b:bex_snapshot, l:id) | continue | endif
         let l:p = b:bex_snapshot[l:id].path
         let l:size = b:bex_snapshot[l:id].is_dir ? '' : s:human_size(getfsize(l:p))
@@ -1101,9 +1129,9 @@ function! s:reapply_props() abort
     endfor
 
     syntax clear
-    syntax match BexID       /^\/[0-9a-fA-F]\+\ze\s/
-    syntax match BexHiddenID /^\/[0-9a-fA-F]\+\ze\s\+\.[^/]/
-    syntax match BexDir        /\%(\/[0-9a-fA-F]\+\s\+\|\s*\)\zs[^/].\+\/$/
+    syntax match BexID       /^\/[0-9a-zA-Z]\+\ze\s/
+    syntax match BexHiddenID /^\/[0-9a-zA-Z]\+\ze\s\+\.[^/]/
+    syntax match BexDir        /\%(\/[0-9a-zA-Z]\+\s\+\|\s*\)\zs[^/].\+\/$/
     syntax match BexDir        /\zs\S\+\/$/
     syntax match BexHiddenDir  /\zs\.[^/]*\/$/
     syntax match BexHiddenFile /\%(^\s*\|\s\)\zs\.[^/]\+$/
