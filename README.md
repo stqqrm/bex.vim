@@ -37,4 +37,4 @@ Plug 'stqqrm/bex.vim'
 
 ## Todo
 
-* Add support for unpacking/packing .zip, .rar, .7z, .tar. (No dependency)
+* Add support for unpacking/packing .zip, .rar, .7z and .tar. (Optional, only enabled if dependencies are already installed)
