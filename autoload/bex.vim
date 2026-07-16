@@ -13,6 +13,36 @@ let g:bex_cursor_pos        = get(g:, 'bex_cursor_pos', {})
 let g:bex_changes_bufnr     = get(g:, 'bex_changes_bufnr', -1)
 let g:bex_header_at_bottom  = get(g:, 'bex_header_at_bottom', 0)
 
+" Auto-refresh open bex windows when this file itself gets resourced (handy
+" while developing the plugin). This is deliberately scoped to bex.vim's
+" own path rather than a <buffer>-local SourcePost autocmd: SourcePost
+" matches on the sourced file, and <buffer> only filters by "is bex the
+" active buffer right now" — so a buffer-local version fires on *every*
+" script sourced anywhere (colorscheme reloads, lazy-loaded plugins,
+" ftplugin files, ...) as long as the user happens to be sitting in a bex
+" buffer at that moment, silently resetting their cursor position.
+let s:bex_script_path = expand('<sfile>:p')
+
+function! s:on_bex_resourced() abort
+    let l:orig_win = win_getid()
+    for l:buf in range(1, bufnr('$'))
+        if bufexists(l:buf) && getbufvar(l:buf, '&filetype') ==# 'bex'
+            let l:win = bufwinnr(l:buf)
+            if l:win != -1
+                execute l:win . 'wincmd w'
+                call bex#SafeRerender()
+                call s:position_header_popup()
+            endif
+        endif
+    endfor
+    call win_gotoid(l:orig_win)
+endfunction
+
+augroup bex_reload_events
+    autocmd!
+    execute 'autocmd SourcePost ' . fnameescape(s:bex_script_path) . ' call s:on_bex_resourced()'
+augroup END
+
 " Public API
 
 function! bex#Open(path) abort
@@ -34,17 +64,16 @@ function! bex#Open(path) abort
 
     augroup bex_events
         autocmd! * <buffer>
-        autocmd VimResized                <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:render() | call s:reapply_props() | call s:ParseBuffer() | call s:position_header_popup()
+        autocmd VimResized                <buffer> call s:reapply_props() | call s:ParseBuffer() | call s:position_header_popup()
         autocmd BufWriteCmd               <buffer> call s:on_write()
         autocmd BufEnter                  <buffer> call s:show_changes_panel() | call s:reapply_props() | call s:position_header_popup()
         autocmd BufLeave                  <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:hide_changes_panel()
         autocmd BufWinLeave               <buffer> call s:close_header_popup()
         autocmd BufUnload                 <buffer> call s:on_unload() | call s:close_header_popup()
         autocmd QuitPre                   <buffer> call s:on_quit() | call s:close_header_popup()
-        autocmd TextChanged,TextChangedI  <buffer> call s:enforce_spacer() | call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props()
+        autocmd TextChanged,TextChangedI  <buffer> call s:enforce_spacer() | call s:lock_cursor() | call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props()
         autocmd CursorMoved,CursorMovedI  <buffer> call s:handle_bounds()
-        autocmd ColorScheme               <buffer> call s:reapply_props() | call s:render() | call s:position_header_popup()
-        autocmd SourcePost                <buffer> call bex#SafeRerender() | call s:position_header_popup()
+        autocmd ColorScheme               <buffer> call s:reapply_props() | call s:position_header_popup()
         autocmd WinScrolled               <buffer> call s:position_header_popup()
         autocmd WinEnter                  <buffer> call s:position_header_popup()
     augroup END
@@ -551,6 +580,11 @@ endfunction
 function! s:apply_all() abort
     call s:normalize_cache()
 
+    let l:cursor_line = line('.')
+    let l:cursor_id = matchstr(getline('.'), '^\/[0-9a-zA-Z]\+')
+    let l:cursor_path = (!empty(l:cursor_id) && has_key(b:bex_snapshot, l:cursor_id))
+        \ ? b:bex_snapshot[l:cursor_id].path : ''
+
     for [l:dir, l:state] in items(g:bex_cache)
         let l:tmps = []
         for l:ren in l:state.rename
@@ -720,6 +754,32 @@ function! s:apply_all() abort
     endif
 
     call s:render()
+
+    " Find whatever the cursor was on before the write, under its
+    " (possibly new, since the ID counter reset above) ID, and put the
+    " cursor back on it rather than leaving it wherever render() defaults
+    " to (the top of the listing).
+    let l:target_id = ''
+    if !empty(l:cursor_path)
+        for [l:id, l:item] in items(b:bex_snapshot)
+            if l:item.path ==# l:cursor_path
+                let l:target_id = l:id
+                break
+            endif
+        endfor
+    endif
+
+    if !empty(l:target_id)
+        for l:lnum in range(s:content_start(), s:content_end())
+            if stridx(getline(l:lnum), l:target_id) == 0
+                call cursor(l:lnum, 1)
+                break
+            endif
+        endfor
+    else
+        call cursor(min([l:cursor_line, line('$')]), 1)
+    endif
+    call s:lock_cursor()
 endfunction
 
 function! s:on_unload() abort
@@ -1048,17 +1108,23 @@ function! s:lock_cursor() abort
 endfunction
 
 function! s:ensure_header_highlights() abort
+    " Sane defaults so the on/off state is visibly distinct even without a
+    " colorscheme that defines these groups; 'default' means a user's own
+    " definition always wins. These must be defined BEFORE prop_type_add
+    " below — prop_type_add throws E970 if the highlight group it
+    " references doesn't exist yet, which previously fired on every single
+    " CursorMoved (since position_header_popup() runs via ParseBuffer on
+    " every cursor move), throwing an error and eating the user's next
+    " keypress as that error prompt's dismissal instead of processing it.
+    highlight default BexDotfilesOn  ctermfg=Green guifg=#98c379
+    highlight default BexDotfilesOff ctermfg=Red   guifg=#e06c75
+
     if empty(prop_type_get('BexDotfilesOn'))
         call prop_type_add('BexDotfilesOn', {'highlight': 'BexDotfilesOn'})
     endif
     if empty(prop_type_get('BexDotfilesOff'))
         call prop_type_add('BexDotfilesOff', {'highlight': 'BexDotfilesOff'})
     endif
-    " Sane defaults so the on/off state is visibly distinct even without a
-    " colorscheme that defines these groups; 'default' means a user's own
-    " definition always wins.
-    highlight default BexDotfilesOn  ctermfg=Green guifg=#98c379
-    highlight default BexDotfilesOff ctermfg=Red   guifg=#e06c75
 endfunction
 
 function! s:position_header_popup() abort
@@ -1314,9 +1380,18 @@ endfunction
 
 function! s:relative_time(ftime) abort
     let l:d = localtime() - a:ftime
-    return l:d < 60 ? l:d.'s ago' : l:d < 3600 ? (l:d/60).'m ago' : l:d < 86400 ? (l:d/3600).'h ago' : (l:d/86400).'d ago'
+    return l:d < 60 ? l:d.'s ago'
+        \ : l:d < 3600 ? (l:d/60).'m ago'
+        \ : l:d < 86400 ? (l:d/3600).'h ago'
+        \ : l:d < 31536000 ? (l:d/86400).'d ago'
+        \ : (l:d/31536000).'y ago'
 endfunction
 
 function! s:human_size(size) abort
-    return a:size < 1024 ? a:size.'B' : a:size < 1048576 ? (a:size/1024).'KB' : (a:size/1048576).'MB'
+    return a:size < 1024 ? a:size.'B'
+        \ : a:size < 1048576 ? printf('%.1fKB', a:size/1024.0)
+        \ : a:size < 1073741824 ? printf('%.1fMB', a:size/1048576.0)
+        \ : a:size < 1099511627776 ? printf('%.1fGB', a:size/1073741824.0)
+        \ : printf('%.1fTB', a:size/1099511627776.0)
 endfunction
+
