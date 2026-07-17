@@ -56,6 +56,20 @@ function! bex#Open(path) abort
     let b:bex_dir = l:dir
     let b:bex_header_popup = -1
 
+    " Tell coc.nvim (and compatible completion/LSP/diagnostics engines) to
+    " leave this buffer alone entirely. bex uses buftype=acwrite, which
+    " looks like a "real" editable file rather than a scratch buffer, so
+    " coc.nvim was attaching its usual document-sync/diagnostics machinery
+    " to it — and that machinery's own CursorHold-triggered background
+    " housekeeping (sourcing its internal compat shims) was silently
+    " resetting the cursor mid-navigation. b:coc_enabled / b:coc_suggest_disable
+    " are the standard opt-out flags coc.nvim recognizes for exactly this
+    " situation; NERDTree, fern.vim, and other file-explorer-style plugins
+    " set the same flags for the same reason. Harmless no-op if coc.nvim
+    " isn't installed.
+    let b:coc_enabled = 0
+    let b:coc_suggest_disable = 1
+
     nnoremap <buffer> <silent> . :call bex#ToggleHidden()<CR>
     nnoremap <buffer> <silent> <CR> :call bex#OnSelect()<CR>
 
@@ -1394,4 +1408,3 @@ function! s:human_size(size) abort
         \ : a:size < 1099511627776 ? printf('%.1fGB', a:size/1073741824.0)
         \ : printf('%.1fTB', a:size/1099511627776.0)
 endfunction
-
