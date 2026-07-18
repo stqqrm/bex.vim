@@ -8,9 +8,7 @@ let g:bex_path_ids          = get(g:, 'bex_path_ids', {})
 let g:bex_snapshots         = get(g:, 'bex_snapshots', {})
 let g:bex_show_hidden       = get(g:, 'bex_show_hidden', 0)
 let g:bex_toggling          = get(g:, 'bex_toggling', 0)
-let g:bex_changes_show_ids  = get(g:, 'bex_changes_show_ids', 0)
 let g:bex_cursor_pos        = get(g:, 'bex_cursor_pos', {})
-let g:bex_changes_bufnr     = get(g:, 'bex_changes_bufnr', -1)
 let g:bex_header_at_bottom  = get(g:, 'bex_header_at_bottom', 0)
 
 " Auto-refresh open bex windows when this file itself gets resourced (handy
@@ -55,6 +53,7 @@ function! bex#Open(path) abort
     setlocal filetype=bex nonumber norelativenumber nowrap noeol nofixeol
     let b:bex_dir = l:dir
     let b:bex_header_popup = -1
+    let b:bex_changes_view = 0
 
     " Tell coc.nvim (and compatible completion/LSP/diagnostics engines) to
     " leave this buffer alone entirely. bex uses buftype=acwrite, which
@@ -72,20 +71,20 @@ function! bex#Open(path) abort
 
     nnoremap <buffer> <silent> . :call bex#ToggleHidden()<CR>
     nnoremap <buffer> <silent> <CR> :call bex#OnSelect()<CR>
+    nnoremap <buffer> <silent> <Tab> :call bex#ToggleChangesView()<CR>
 
     call s:render()
-    call s:ParseBuffer()
 
     augroup bex_events
         autocmd! * <buffer>
-        autocmd VimResized                <buffer> call s:reapply_props() | call s:ParseBuffer() | call s:position_header_popup()
+        autocmd VimResized                <buffer> call s:reapply_props() | call s:position_header_popup()
         autocmd BufWriteCmd               <buffer> call s:on_write()
-        autocmd BufEnter                  <buffer> call s:show_changes_panel() | call s:reapply_props() | call s:position_header_popup()
-        autocmd BufLeave                  <buffer> call bex#UpdateVirtualDirectory(b:bex_dir) | call s:hide_changes_panel()
+        autocmd BufEnter                  <buffer> call s:reapply_props() | call s:position_header_popup()
+        autocmd BufLeave                  <buffer> call bex#UpdateVirtualDirectory(b:bex_dir)
         autocmd BufWinLeave               <buffer> call s:close_header_popup()
         autocmd BufUnload                 <buffer> call s:on_unload() | call s:close_header_popup()
         autocmd QuitPre                   <buffer> call s:on_quit() | call s:close_header_popup()
-        autocmd TextChanged,TextChangedI  <buffer> call s:enforce_spacer() | call s:lock_cursor() | call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props()
+        autocmd TextChanged,TextChangedI  <buffer> call s:enforce_spacer() | call s:lock_cursor() | call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props() | call s:position_header_popup()
         autocmd CursorMoved,CursorMovedI  <buffer> call s:handle_bounds()
         autocmd ColorScheme               <buffer> call s:reapply_props() | call s:position_header_popup()
         autocmd WinScrolled               <buffer> call s:position_header_popup()
@@ -114,12 +113,6 @@ function! bex#Reload(...) abort
     let g:bex_id_counter = 0
     let g:bex_path_ids   = {}
     let g:bex_cursor_pos = {}
-
-    " Close changes panel if open
-    if g:bex_changes_bufnr != -1 && bufwinnr(g:bex_changes_bufnr) != -1
-        execute bufwinnr(g:bex_changes_bufnr) . 'close'
-    endif
-    let g:bex_changes_bufnr = -1
 
     " Find and wipe all bex buffers, then open fresh
     let l:dir = ''
@@ -150,6 +143,14 @@ function! bex#Navigate(path, ...) abort
         return
     endif
 
+    " Navigating away always leaves the changes view first — the buffer's
+    " about to hold a different directory's listing, which needs to be
+    " modifiable to build.
+    if get(b:, 'bex_changes_view', 0)
+        let b:bex_changes_view = 0
+        setlocal modifiable
+    endif
+
     let g:bex_cursor_pos[b:bex_dir] = getcurpos()
     call bex#UpdateVirtualDirectory(b:bex_dir)
 
@@ -164,6 +165,14 @@ function! bex#Navigate(path, ...) abort
 endfunction
 
 function! bex#ToggleHidden() abort
+    if get(b:, 'bex_changes_view', 0)
+        let b:bex_changes_view = 0
+        setlocal modifiable
+    endif
+
+    let l:cursor_line = line('.')
+    let l:cursor_id = matchstr(getline('.'), '^\/[0-9a-zA-Z]\+')
+
     let g:bex_toggling = 1
     let l:plan = s:QueryBuffer()
     let l:has_changes = !empty(l:plan.delete) || !empty(l:plan.rename)
@@ -173,6 +182,28 @@ function! bex#ToggleHidden() abort
     endif
     let g:bex_show_hidden = !g:bex_show_hidden
     call s:render()
+
+    " IDs stay stable across a dotfiles toggle (only render() runs, not
+    " apply_all(), so g:bex_path_ids isn't reassigned) — find the same
+    " item's line again rather than leaving the cursor wherever render()
+    " defaults to. Falls back to a clamped line number if the item just
+    " became hidden (or shown, if it was already the file the cursor was
+    " on before toggling dotfiles off left nothing to find).
+    let l:found = 0
+    if !empty(l:cursor_id)
+        for l:lnum in range(s:content_start(), s:content_end())
+            if stridx(getline(l:lnum), l:cursor_id) == 0
+                call cursor(l:lnum, 1)
+                let l:found = 1
+                break
+            endif
+        endfor
+    endif
+    if !l:found
+        call cursor(min([l:cursor_line, line('$')]), 1)
+    endif
+    call s:lock_cursor()
+
     let g:bex_toggling = 0
     call bex#UpdateVirtualDirectory(b:bex_dir)
 endfunction
@@ -190,6 +221,11 @@ function! bex#GoUp() abort
 endfunction
 
 function! bex#OnSelect() abort
+    if get(b:, 'bex_changes_view', 0)
+        call s:revert_change_under_cursor()
+        return
+    endif
+
     let l:line = getline('.')
     let l:match = matchlist(l:line, '^\(\/[0-9a-zA-Z]\+\)\s\+\(.*\)$')
 
@@ -250,6 +286,10 @@ endfunction
 
 function! bex#UpdateVirtualDirectory(path) abort
     if g:bex_toggling | return | endif
+    " While viewing changes the buffer holds rendered summary text, not a
+    " listing — nothing to derive pending state from, and g:bex_cache
+    " already has the real state anyway.
+    if get(b:, 'bex_changes_view', 0) | return | endif
     if mode() =~# '^[vV]' || mode() ==# "\<C-v>" | return | endif
 
     let l:state = s:QueryBuffer()
@@ -267,11 +307,31 @@ function! bex#UpdateVirtualDirectory(path) abort
     endif
 
     call s:normalize_cache()
-    call s:ParseBuffer()
 endfunction
 
 function! bex#RevertChangeUnderCursor() abort
     call s:revert_change_under_cursor()
+endfunction
+
+" Toggle between the normal editable listing and a read-only summary of
+" everything staged in g:bex_cache, rendered directly into the same
+" buffer. Mapped to <Tab> — see the top-level comment near the mapping for
+" why that key specifically.
+function! bex#ToggleChangesView() abort
+    if get(b:, 'bex_changes_view', 0)
+        let b:bex_changes_view = 0
+        setlocal modifiable
+        call s:render()
+        return
+    endif
+
+    if empty(g:bex_cache)
+        echo 'bex: no pending changes'
+        return
+    endif
+
+    let b:bex_changes_view = 1
+    call s:show_changes_in_buffer()
 endfunction
 
 " Buffer Query & State
@@ -338,7 +398,7 @@ endfunction
 " descendants are redundant — deleting the directory already removes them
 " recursively. Prune those descendant delete entries (and drop the cached
 " state for that directory entirely if nothing else is pending there) so
-" the changes panel and the delete pass only ever deal with the top-most
+" the changes view and the delete pass only ever deal with the top-most
 " deleted directory.
 function! s:prune_redundant_deletes() abort
     let l:deleted_dirs = []
@@ -518,7 +578,19 @@ function! s:validate_all() abort
 endfunction
 
 function! s:on_write() abort
-    call bex#UpdateVirtualDirectory(b:bex_dir)
+    if get(b:, 'bex_changes_view', 0)
+        " g:bex_cache already fully reflects what's pending — the buffer
+        " right now is rendered summary text, not a listing to re-derive
+        " state from, so just restore a modifiable listing (which
+        " apply_all()'s closing render() needs) and skip straight to
+        " applying.
+        let b:bex_changes_view = 0
+        setlocal modifiable
+        call s:render()
+    else
+        call bex#UpdateVirtualDirectory(b:bex_dir)
+    endif
+
     if empty(g:bex_cache) | setlocal nomodified | return | endif
 
     let l:result = s:validate_all()
@@ -763,10 +835,6 @@ function! s:apply_all() abort
 
     setlocal nomodified
 
-    if g:bex_changes_bufnr != -1 && bufwinnr(g:bex_changes_bufnr) != -1
-        execute bufwinnr(g:bex_changes_bufnr) . 'close'
-    endif
-
     call s:render()
 
     " Find whatever the cursor was on before the write, under its
@@ -801,14 +869,15 @@ function! s:on_unload() abort
     if !empty(l:dir) && has_key(g:bex_cache, l:dir)
         call remove(g:bex_cache, l:dir)
     endif
-    call s:ParseBuffer()
 endfunction
 
 function! s:on_quit() abort
     let l:buf = bufnr('%')
 
-    if g:bex_changes_bufnr != -1 && bufwinnr(g:bex_changes_bufnr) != -1
-        execute bufwinnr(g:bex_changes_bufnr) . 'close'
+    if get(b:, 'bex_changes_view', 0)
+        let b:bex_changes_view = 0
+        setlocal modifiable
+        call s:render()
     endif
 
     if histget('cmd', -1) =~# '!\s*$'
@@ -903,85 +972,6 @@ function! s:render() abort
     call s:restore_cached_buffer()
     call s:position_header_popup()
     call s:lock_cursor()
-endfunction
-
-function! s:revert_change_under_cursor() abort
-    let l:save_lnum = line('.')
-    let l:line = getline('.')
-    let l:id = matchstr(l:line, '\/[0-9a-zA-Z]\+')
-
-    if empty(l:id)
-        let l:entry_name = matchstr(l:line, '^\s*[+~*-]\s\+\%((\w\+)\s\+\)\?\zs.*')
-        if empty(l:entry_name) | return | endif
-
-        let l:owner_dir = ''
-        let l:home = expand('$HOME')
-        for l:ln in range(l:save_lnum - 1, 1, -1)
-            let l:hdr = trim(getline(l:ln))
-            if empty(l:hdr) | continue | endif
-            if l:hdr =~# '^[+~*-]\s' | continue | endif
-            let l:expanded = substitute(l:hdr, '^\~/', l:home . '/', '')
-            let l:expanded = substitute(l:expanded, '[/\\]$', '', '')
-            if has_key(g:bex_cache, l:expanded)
-                let l:owner_dir = l:expanded
-            endif
-            break
-        endfor
-
-        if empty(l:owner_dir) | return | endif
-        let l:state = g:bex_cache[l:owner_dir]
-        let l:state.entries = filter(copy(l:state.entries), {_, v -> v !=# l:entry_name})
-        let g:bex_cache[l:owner_dir] = l:state
-        if empty(l:state.delete) && empty(l:state.rename)
-            \ && empty(l:state.entries) && empty(l:state.move_to)
-            call remove(g:bex_cache, l:owner_dir)
-        endif
-
-        call s:revert_finish(l:save_lnum)
-        return
-    endif
-
-    for [l:dir, l:state] in items(g:bex_cache)
-        let l:state.delete  = filter(copy(l:state.delete),  {_, v -> v.id !=# l:id})
-        let l:state.rename  = filter(copy(l:state.rename),  {_, v -> v.id !=# l:id})
-        let l:state.move_to = filter(copy(l:state.move_to), {_, v -> v.id !=# l:id})
-        let g:bex_cache[l:dir] = l:state
-        if empty(l:state.delete) && empty(l:state.rename)
-            \ && empty(l:state.entries) && empty(l:state.move_to)
-            call remove(g:bex_cache, l:dir)
-        endif
-    endfor
-
-    call s:revert_finish(l:save_lnum)
-endfunction
-
-function! s:revert_finish(save_lnum) abort
-    call s:ParseBuffer()
-
-    for l:buf in range(1, bufnr('$'))
-        if getbufvar(l:buf, '&filetype') ==# 'bex'
-            let l:bex_win = bufwinnr(l:buf)
-            if l:bex_win == -1
-                noautocmd leftabove vertical split
-                call setbufvar(l:buf, '&modified', 0)
-                noautocmd execute 'buffer ' . l:buf
-                let l:bex_win = bufwinnr(l:buf)
-            endif
-            if l:bex_win != -1
-                let l:cur_win = winnr()
-                execute l:bex_win . 'wincmd w'
-                call s:render()
-                execute l:cur_win . 'wincmd w'
-            endif
-        endif
-    endfor
-
-    let l:new_last = line('$')
-    if a:save_lnum > l:new_last || empty(trim(getline(a:save_lnum)))
-        call cursor(max([1, a:save_lnum - 1]), 1)
-    else
-        call cursor(a:save_lnum, 1)
-    endif
 endfunction
 
 function! s:restore_cached_buffer() abort
@@ -1081,6 +1071,7 @@ endfunction
 " covering a real entry.
 function! s:enforce_spacer() abort
     if !exists('b:bex_dir') | return | endif
+    if get(b:, 'bex_changes_view', 0) | return | endif
     if g:bex_header_at_bottom
         if !empty(getline(line('$')))
             call append(line('$'), '')
@@ -1108,8 +1099,10 @@ endfunction
 " Keep the cursor from ever resting on the reserved spacer line, in any
 " mode. In Visual/Visual-block mode this only moves the active end of the
 " selection (cursor()); the anchor end ('v mark) is untouched, so it just
-" clamps how far a selection can extend rather than cancelling it.
+" clamps how far a selection can extend rather than cancelling it. No-op
+" while viewing changes — there's no spacer concept in that view.
 function! s:lock_cursor() abort
+    if get(b:, 'bex_changes_view', 0) | return | endif
     if g:bex_header_at_bottom
         if line('.') == line('$') && line('$') > 1
             call cursor(line('$') - 1, 1)
@@ -1127,9 +1120,9 @@ function! s:ensure_header_highlights() abort
     " definition always wins. These must be defined BEFORE prop_type_add
     " below — prop_type_add throws E970 if the highlight group it
     " references doesn't exist yet, which previously fired on every single
-    " CursorMoved (since position_header_popup() runs via ParseBuffer on
-    " every cursor move), throwing an error and eating the user's next
-    " keypress as that error prompt's dismissal instead of processing it.
+    " CursorMoved (since position_header_popup() runs on every cursor
+    " move), throwing an error and eating the user's next keypress as that
+    " error prompt's dismissal instead of processing it.
     highlight default BexDotfilesOn  ctermfg=Green guifg=#98c379
     highlight default BexDotfilesOff ctermfg=Red   guifg=#e06c75
 
@@ -1139,6 +1132,29 @@ function! s:ensure_header_highlights() abort
     if empty(prop_type_get('BexDotfilesOff'))
         call prop_type_add('BexDotfilesOff', {'highlight': 'BexDotfilesOff'})
     endif
+endfunction
+
+" Compact, single-line summary of the current directory's pending changes
+" only (not the whole g:bex_cache — that's what <Tab> is for), e.g.
+" "-old.txt ~renamed.txt +new.txt". Truncated by the caller to fit the
+" window, since this is destined for the header popup.
+function! s:change_summary_text() abort
+    if !has_key(g:bex_cache, b:bex_dir) | return '' | endif
+    let l:state = g:bex_cache[b:bex_dir]
+    let l:parts = []
+    for l:d in get(l:state, 'delete', [])
+        call add(l:parts, '-' . l:d.name)
+    endfor
+    for l:r in get(l:state, 'rename', [])
+        call add(l:parts, '~' . l:r.new)
+    endfor
+    for l:m in get(l:state, 'move_to', [])
+        call add(l:parts, '+' . l:m.name)
+    endfor
+    for l:e in get(l:state, 'entries', [])
+        call add(l:parts, '+' . l:e)
+    endfor
+    return join(l:parts, ' ')
 endfunction
 
 function! s:position_header_popup() abort
@@ -1159,13 +1175,27 @@ function! s:position_header_popup() abort
     let l:right    = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
     let l:right_hl = g:bex_show_hidden ? 'BexDotfilesOn' : 'BexDotfilesOff'
 
-    let l:width = max([winwidth(l:winid), strdisplaywidth(l:left) + strdisplaywidth(l:right) + 1])
-    let l:pad   = max([l:width - strdisplaywidth(l:left) - strdisplaywidth(l:right), 1])
-    let l:text  = l:left . repeat(' ', l:pad) . l:right
+    " Squeeze in a compact change summary between the path and the
+    " dotfiles state, truncating it (never the path) with '...' if there
+    " isn't room for the whole thing.
+    let l:summary = s:change_summary_text()
+    if !empty(l:summary)
+        let l:avail = winwidth(l:winid) - strdisplaywidth(l:left) - strdisplaywidth(l:right) - 6
+        if l:avail < 1
+            let l:summary = ''
+        elseif strdisplaywidth(l:summary) > l:avail
+            let l:summary = strcharpart(l:summary, 0, max([l:avail - 3, 0])) . '...'
+        endif
+    endif
+    let l:left_full = empty(l:summary) ? l:left : l:left . '  ' . l:summary
+
+    let l:width = max([winwidth(l:winid), strdisplaywidth(l:left_full) + strdisplaywidth(l:right) + 1])
+    let l:pad   = max([l:width - strdisplaywidth(l:left_full) - strdisplaywidth(l:right), 1])
+    let l:text  = l:left_full . repeat(' ', l:pad) . l:right
 
     " 1-based byte column where the dotfiles segment starts, so only that
     " part of the line is colored — the rest stays the plain header color.
-    let l:right_col = len(l:left) + l:pad + 1
+    let l:right_col = len(l:left_full) + l:pad + 1
     let l:content = [{
         \ 'text': l:text,
         \ 'props': [{'col': l:right_col, 'length': len(l:right), 'type': l:right_hl}]
@@ -1195,6 +1225,12 @@ function! s:position_header_popup() abort
 endfunction
 
 function! s:reapply_props() abort
+    " The changes view manages its own props/highlighting (see
+    " s:show_changes_in_buffer()) — clearing/rebuilding the file-listing
+    " ones here would just wipe that out for nothing, since none of the
+    " listing patterns match changes-view text anyway.
+    if get(b:, 'bex_changes_view', 0) | return | endif
+
     if empty(prop_type_get('bex_info')) | call prop_type_add('bex_info', {'highlight': 'BexInfo'}) | endif
 
     call prop_clear(1, line('$'))
@@ -1217,71 +1253,15 @@ function! s:reapply_props() abort
     syntax match BexHiddenFile /\%(^\s*\|\s\)\zs\.[^/]\+$/
 endfunction
 
-" Changes Panel
+" Changes View — toggled in-place with <Tab> instead of a separate split.
+" Builds a read-only (nomodifiable) rendering of everything staged across
+" g:bex_cache directly into the current buffer; <Tab> again (or writing)
+" returns to the normal editable listing.
 
-function! s:show_changes_panel() abort
-    if empty(g:bex_cache) | return | endif
-    call s:ParseBuffer()
-endfunction
-
-function! s:hide_changes_panel() abort
-    if g:bex_changes_bufnr == -1 | return | endif
-    if bufnr('%') == g:bex_changes_bufnr | return | endif
-    let l:bex_visible = 0
-    for l:buf in range(1, bufnr('$'))
-        if getbufvar(l:buf, '&filetype') ==# 'bex' && bufwinnr(l:buf) != -1
-            let l:bex_visible = 1 | break
-        endif
-    endfor
-    if l:bex_visible | return | endif
-    let l:win = bufwinnr(g:bex_changes_bufnr)
-    if l:win != -1
-        execute l:win . 'close'
-    endif
-endfunction
-
-function! s:ParseBuffer() abort
-    call s:normalize_cache()
-
-    let l:current_win_id = win_getid()
-    let l:has_changes = !empty(g:bex_cache)
-    let l:cbuf = g:bex_changes_bufnr
-
-    if !l:has_changes
-        if l:cbuf != -1 && bufwinnr(l:cbuf) != -1
-            execute bufwinnr(l:cbuf) . 'close'
-        endif
-        call win_gotoid(l:current_win_id)
-        call s:position_header_popup()
-        return
-    endif
-
-    if l:cbuf == -1 || !bufexists(l:cbuf)
-        noautocmd rightbelow vertical 30vnew
-        let g:bex_changes_bufnr = bufnr('%')
-        let l:cbuf = g:bex_changes_bufnr
-        setlocal buftype=nofile bufhidden=hide noswapfile nobuflisted
-        setlocal nonumber norelativenumber nowrap
-        setlocal filetype=bex_changes
-        setlocal statusline=\ changes
-        augroup bex_changes_events
-            autocmd! * <buffer>
-            autocmd BufEnter   <buffer> let g:bex_changes_show_ids = 1 | call s:ParseBuffer()
-            autocmd BufLeave   <buffer> let g:bex_changes_show_ids = 0
-            autocmd BufWipeout <buffer> let g:bex_changes_bufnr = -1
-        augroup END
-        nnoremap <buffer> <silent> <CR> :call bex#RevertChangeUnderCursor()<CR>
-        call win_gotoid(l:current_win_id)
-    elseif bufwinnr(l:cbuf) == -1
-        noautocmd rightbelow vertical 30vnew
-        noautocmd execute 'buffer ' . l:cbuf
-        if bufwinnr(l:cbuf) == -1 | close | call win_gotoid(l:current_win_id) | return | endif
-        call win_gotoid(l:current_win_id)
-    endif
-
-    let l:cwin = bufwinnr(l:cbuf)
-    if l:cwin == -1 | call win_gotoid(l:current_win_id) | return | endif
-
+" Builds the {lines, highlights} for every directory with pending changes
+" in g:bex_cache — the full picture, not just the current directory (that
+" scoping is for the header-popup summary instead).
+function! s:build_changes_content() abort
     let l:global_deletions = {}
     for [l:dir, l:state] in items(g:bex_cache)
         for l:item in get(l:state, 'delete', [])
@@ -1308,35 +1288,31 @@ function! s:ParseBuffer() abort
         let l:lnum += 1
 
         for l:del in get(l:state, 'delete', [])
-            let l:id_prefix = g:bex_changes_show_ids ? l:del.id . ' ' : ''
             let l:del_name = l:del.name . (has_key(l:state.snapshot, l:del.id) && l:state.snapshot[l:del.id].is_dir ? '/' : '')
-            call add(l:lines, '   - ' . l:id_prefix . l:del_name)
+            call add(l:lines, '   - ' . l:del.id . ' ' . l:del_name)
             call add(l:highlights, {'lnum': l:lnum, 'hl': has_key(l:global_placements, l:del.id) ? 'BexChangesMoveFrom' : 'BexChangesDel'})
             let l:lnum += 1
         endfor
 
         for l:ren in get(l:state, 'rename', [])
-            let l:id_prefix = g:bex_changes_show_ids ? l:ren.id . ' ' : ''
-            call add(l:lines, '   ~ ' . l:id_prefix . l:ren.old . ' -> ' . l:ren.new)
+            call add(l:lines, '   ~ ' . l:ren.id . ' ' . l:ren.old . ' -> ' . l:ren.new)
             call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesRename'})
             let l:lnum += 1
         endfor
 
         for l:mov in get(l:state, 'move_to', [])
-            let l:id_prefix = g:bex_changes_show_ids ? l:mov.id . ' ' : ''
             if has_key(l:global_deletions, l:mov.id)
-                call add(l:lines, '   + ' . l:id_prefix . l:mov.name)
+                call add(l:lines, '   + ' . l:mov.id . ' ' . l:mov.name)
                 call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesMoveTo'})
             else
-                call add(l:lines, '   * ' . l:id_prefix . l:mov.name)
+                call add(l:lines, '   * ' . l:mov.id . ' ' . l:mov.name)
                 call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesCopy'})
             endif
             let l:lnum += 1
         endfor
 
         for l:ent in get(l:state, 'entries', [])
-            let l:id_prefix = g:bex_changes_show_ids ? '(new) ' : ''
-            call add(l:lines, '   + ' . l:id_prefix . l:ent)
+            call add(l:lines, '   + (new) ' . l:ent)
             call add(l:highlights, {'lnum': l:lnum, 'hl': 'BexChangesAdd'})
             let l:lnum += 1
         endfor
@@ -1345,33 +1321,123 @@ function! s:ParseBuffer() abort
         let l:lnum += 1
     endfor
 
-    execute l:cwin . 'wincmd w'
+    " Drop the single trailing blank separator so the view doesn't end on
+    " an empty line.
+    if !empty(l:lines) && empty(l:lines[-1])
+        call remove(l:lines, -1)
+    endif
+
+    return {'lines': l:lines, 'highlights': l:highlights}
+endfunction
+
+function! s:show_changes_in_buffer() abort
+    let l:content = s:build_changes_content()
+    let l:lines = empty(l:content.lines) ? ['(no pending changes)'] : l:content.lines
+    let l:highlights = copy(l:content.highlights)
+
+    " Reserve a blank line for the header popup to sit over — same
+    " convention as the listing view — so it doesn't cover the first row
+    " of real content (the changes view has no editable spacer/cursor-lock
+    " machinery since it's read-only, but the popup still needs somewhere
+    " blank to render).
+    if g:bex_header_at_bottom
+        let l:lines = l:lines + ['']
+    else
+        let l:lines = [''] + l:lines
+        let l:highlights = map(l:highlights, {_, v -> extend(v, {'lnum': v.lnum + 1})})
+    endif
+
+    " Sane defaults, same reasoning as s:ensure_header_highlights(): these
+    " must exist before prop_type_add references them below, or it throws
+    " E970. 'default' still yields to any colorscheme that defines these
+    " groups itself.
+    highlight default BexChangesDir      cterm=bold    gui=bold
+    highlight default BexChangesDel      ctermfg=Red   guifg=#e06c75
+    highlight default BexChangesMoveFrom ctermfg=Red   guifg=#e06c75 cterm=italic gui=italic
+    highlight default BexChangesRename   ctermfg=Yellow guifg=#e5c07b
+    highlight default BexChangesMoveTo   ctermfg=Green guifg=#98c379
+    highlight default BexChangesCopy     ctermfg=Green guifg=#98c379 cterm=italic gui=italic
+    highlight default BexChangesAdd      ctermfg=Green guifg=#98c379
+
     setlocal modifiable
     silent %delete _
     call setline(1, l:lines)
+    setlocal nomodifiable nomodified
 
-    call prop_clear(1, line('$'), {'bufnr': l:cbuf})
+    call prop_clear(1, line('$'))
     for l:item in l:highlights
-        if empty(prop_type_get(l:item.hl, {'bufnr': l:cbuf}))
-            call prop_type_add(l:item.hl, {'highlight': l:item.hl, 'bufnr': l:cbuf})
+        if empty(prop_type_get(l:item.hl))
+            call prop_type_add(l:item.hl, {'highlight': l:item.hl})
         endif
         call prop_add(l:item.lnum, 1, {
             \ 'end_col': len(getline(l:item.lnum)) + 1,
-            \ 'type': l:item.hl,
-            \ 'bufnr': l:cbuf
+            \ 'type': l:item.hl
             \ })
     endfor
 
-    setlocal nomodifiable
-
-    let l:max_w = 25
-    for l:n in range(1, line('$'))
-        let l:max_w = max([l:max_w, strdisplaywidth(getline(l:n)) + 3])
-    endfor
-    execute 'vertical resize ' . l:max_w
-
-    call win_gotoid(l:current_win_id)
+    call cursor(g:bex_header_at_bottom ? 1 : min([2, line('$')]), 1)
     call s:position_header_popup()
+endfunction
+
+" Reverts whatever change is under the cursor while in the changes view
+" (mapped through <CR> via bex#OnSelect()'s dispatch at the top).
+function! s:revert_change_under_cursor() abort
+    let l:save_lnum = line('.')
+    let l:line = getline('.')
+    let l:id = matchstr(l:line, '\/[0-9a-zA-Z]\+')
+
+    if empty(l:id)
+        " A plain new-entry line (no ID) — find it by name within the
+        " directory header it's nested under.
+        let l:entry_name = matchstr(l:line, '^\s*[+~*-]\s\+(new)\s\+\zs.*')
+        if empty(l:entry_name) | return | endif
+
+        let l:owner_dir = ''
+        let l:home = expand('$HOME')
+        for l:ln in range(l:save_lnum - 1, 1, -1)
+            let l:hdr = trim(getline(l:ln))
+            if empty(l:hdr) | continue | endif
+            if l:hdr =~# '^[+~*-]\s' | continue | endif
+            let l:expanded = substitute(l:hdr, '^\~/', l:home . '/', '')
+            let l:expanded = substitute(l:expanded, '[/\\]$', '', '')
+            if has_key(g:bex_cache, l:expanded)
+                let l:owner_dir = l:expanded
+            endif
+            break
+        endfor
+
+        if empty(l:owner_dir) | return | endif
+        let l:state = g:bex_cache[l:owner_dir]
+        let l:state.entries = filter(copy(l:state.entries), {_, v -> v !=# l:entry_name})
+        let g:bex_cache[l:owner_dir] = l:state
+        if empty(l:state.delete) && empty(l:state.rename)
+            \ && empty(l:state.entries) && empty(l:state.move_to)
+            call remove(g:bex_cache, l:owner_dir)
+        endif
+    else
+        for [l:dir, l:state] in items(g:bex_cache)
+            let l:state.delete  = filter(copy(l:state.delete),  {_, v -> v.id !=# l:id})
+            let l:state.rename  = filter(copy(l:state.rename),  {_, v -> v.id !=# l:id})
+            let l:state.move_to = filter(copy(l:state.move_to), {_, v -> v.id !=# l:id})
+            let g:bex_cache[l:dir] = l:state
+            if empty(l:state.delete) && empty(l:state.rename)
+                \ && empty(l:state.entries) && empty(l:state.move_to)
+                call remove(g:bex_cache, l:dir)
+            endif
+        endfor
+    endif
+
+    call s:normalize_cache()
+
+    if empty(g:bex_cache)
+        " Nothing left to review — drop back to the listing automatically.
+        let b:bex_changes_view = 0
+        setlocal modifiable
+        call s:render()
+    else
+        call s:show_changes_in_buffer()
+        call cursor(min([l:save_lnum, line('$')]), 1)
+    endif
 endfunction
 
 " Helpers
@@ -1380,6 +1446,10 @@ function! bex#SafeRerender() abort
     if !bufexists(bufnr('%')) | return | endif
     if mode() !~# '^n' | return | endif
     try
+        if get(b:, 'bex_changes_view', 0)
+            let b:bex_changes_view = 0
+            setlocal modifiable
+        endif
         setlocal nonumber norelativenumber nowrap noeol nofixeol
         call s:reapply_props()
         call s:render()
@@ -1388,8 +1458,10 @@ function! bex#SafeRerender() abort
 endfunction
 
 function! s:handle_bounds() abort
+    if get(b:, 'bex_changes_view', 0) | return | endif
     call s:lock_cursor()
     call bex#UpdateVirtualDirectory(b:bex_dir)
+    call s:position_header_popup()
 endfunction
 
 function! s:relative_time(ftime) abort
