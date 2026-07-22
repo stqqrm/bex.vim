@@ -25,10 +25,10 @@ endfunction
 
 function! bex#RedefineHighlights() abort
     highlight! BexHeader          ctermfg=Yellow cterm=bold gui=bold
-    highlight! BexInfo            guifg=#404040
-    highlight! BexID              guifg=#404040
+    highlight! BexInfo            ctermfg=DarkGrey
+    highlight! BexID              ctermfg=DarkGrey
     highlight! BexDir             ctermfg=Yellow cterm=bold
-    highlight! BexHiddenID        guifg=#252525
+    highlight! BexHiddenID        ctermfg=DarkGrey
     highlight! BexHiddenDir       ctermfg=Yellow cterm=bold
     highlight! BexHiddenFile      ctermfg=White
     highlight! BexVisible         ctermfg=Green cterm=bold gui=bold
