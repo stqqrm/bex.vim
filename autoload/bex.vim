@@ -145,10 +145,15 @@ function! bex#Navigate(path, ...) abort
 
     " Navigating away always leaves the changes view first — the buffer's
     " about to hold a different directory's listing, which needs to be
-    " modifiable to build.
+    " modifiable to build. Must actually re-render here (not just flip the
+    " flag and modifiable), since the very next line queries buffer text
+    " for pending edits — leaving stale changes-view text in place would
+    " make every previously-tracked file look deleted (nothing there
+    " starts with a valid ID).
     if get(b:, 'bex_changes_view', 0)
         let b:bex_changes_view = 0
         setlocal modifiable
+        call s:render()
     endif
 
     let g:bex_cursor_pos[b:bex_dir] = getcurpos()
@@ -165,9 +170,13 @@ function! bex#Navigate(path, ...) abort
 endfunction
 
 function! bex#ToggleHidden() abort
+    " Same reasoning as bex#Navigate()'s equivalent guard: must actually
+    " re-render, not just clear the flag, since s:QueryBuffer() runs right
+    " below against whatever the buffer currently holds.
     if get(b:, 'bex_changes_view', 0)
         let b:bex_changes_view = 0
         setlocal modifiable
+        call s:render()
     endif
 
     let l:cursor_line = line('.')
