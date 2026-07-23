@@ -170,6 +170,24 @@ function! bex#Navigate(path, ...) abort
 endfunction
 
 function! bex#ToggleHidden() abort
+    " Guard set FIRST, before anything that can call s:render() — not just
+    " around the render() below that actually applies the toggle. render()
+    " rebuilds b:bex_snapshot to the new (full) listing *before* it clears
+    " and repopulates the buffer text (%delete _ then setline/append), so
+    " there's a brief window where the buffer is empty/partial while the
+    " snapshot already reflects everything. If a TextChanged autocmd fires
+    " in that window, bex#UpdateVirtualDirectory() -> s:QueryBuffer() would
+    " diff that empty/partial buffer against the full snapshot and flag
+    " every currently-tracked file as deleted, caching a bogus deletion
+    " plan. g:bex_toggling exists to make bex#UpdateVirtualDirectory()
+    " no-op during exactly this window — but it only protects render()
+    " calls made after it's set. The render() below used to happen before
+    " this flag was set whenever the toggle was invoked while viewing
+    " changes (leaving that view re-renders the listing first), which is
+    " exactly the "toggle dotfiles from the Tab changes view" path that
+    " triggered spurious deletions.
+    let g:bex_toggling = 1
+
     " Same reasoning as bex#Navigate()'s equivalent guard: must actually
     " re-render, not just clear the flag, since s:QueryBuffer() runs right
     " below against whatever the buffer currently holds.
@@ -182,7 +200,6 @@ function! bex#ToggleHidden() abort
     let l:cursor_line = line('.')
     let l:cursor_id = matchstr(getline('.'), '^\/[0-9a-zA-Z]\+')
 
-    let g:bex_toggling = 1
     let l:plan = s:QueryBuffer()
     let l:has_changes = !empty(l:plan.delete) || !empty(l:plan.rename)
         \ || !empty(l:plan.entries) || !empty(l:plan.move_to)
