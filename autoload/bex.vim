@@ -361,6 +361,31 @@ function! bex#ToggleChangesView() abort
         let b:bex_changes_view = 0
         setlocal modifiable
         call s:render()
+
+        " s:render() rebuilds the listing from scratch, so the line the
+        " cursor happens to be on (a leftover changes-view line number)
+        " has nothing to do with the item it was on before <Tab> was
+        " pressed. Find that same item again by ID, same as
+        " bex#ToggleHidden() does, rather than leaving the cursor
+        " wherever render() defaults to.
+        if exists('b:bex_pre_changes_cursor')
+            let l:saved = b:bex_pre_changes_cursor
+            unlet b:bex_pre_changes_cursor
+            let l:found = 0
+            if !empty(l:saved.id)
+                for l:lnum in range(s:content_start(), s:content_end())
+                    if stridx(getline(l:lnum), l:saved.id) == 0
+                        call cursor(l:lnum, 1)
+                        let l:found = 1
+                        break
+                    endif
+                endfor
+            endif
+            if !l:found
+                call cursor(min([l:saved.line, line('$')]), 1)
+            endif
+            call s:lock_cursor()
+        endif
         return
     endif
 
@@ -369,6 +394,10 @@ function! bex#ToggleChangesView() abort
         return
     endif
 
+    let b:bex_pre_changes_cursor = {
+        \ 'line': line('.'),
+        \ 'id': matchstr(getline('.'), '^\/[0-9a-zA-Z]\+')
+        \ }
     let b:bex_changes_view = 1
     call s:show_changes_in_buffer()
 endfunction
