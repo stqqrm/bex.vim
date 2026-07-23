@@ -170,32 +170,34 @@ function! bex#Navigate(path, ...) abort
 endfunction
 
 function! bex#ToggleHidden() abort
-    " Guard set FIRST, before anything that can call s:render() — not just
-    " around the render() below that actually applies the toggle. render()
-    " rebuilds b:bex_snapshot to the new (full) listing *before* it clears
-    " and repopulates the buffer text (%delete _ then setline/append), so
-    " there's a brief window where the buffer is empty/partial while the
-    " snapshot already reflects everything. If a TextChanged autocmd fires
-    " in that window, bex#UpdateVirtualDirectory() -> s:QueryBuffer() would
-    " diff that empty/partial buffer against the full snapshot and flag
-    " every currently-tracked file as deleted, caching a bogus deletion
-    " plan. g:bex_toggling exists to make bex#UpdateVirtualDirectory()
-    " no-op during exactly this window — but it only protects render()
-    " calls made after it's set. The render() below used to happen before
-    " this flag was set whenever the toggle was invoked while viewing
-    " changes (leaving that view re-renders the listing first), which is
-    " exactly the "toggle dotfiles from the Tab changes view" path that
-    " triggered spurious deletions.
-    let g:bex_toggling = 1
-
-    " Same reasoning as bex#Navigate()'s equivalent guard: must actually
-    " re-render, not just clear the flag, since s:QueryBuffer() runs right
-    " below against whatever the buffer currently holds.
+    " While viewing the changes summary (<Tab>), there's no listing in the
+    " buffer to toggle -- it's read-only summary text built from
+    " g:bex_cache, unrelated to the current dotfiles state. Just flip the
+    " flag and refresh the header popup's on/off indicator in place; the
+    " new state takes effect next time the listing itself is rendered
+    " (e.g. when <Tab> returns to it). Deliberately does not leave the
+    " changes view, touch the buffer, or call s:render() here -- doing so
+    " previously caused every tracked file to get flagged for deletion
+    " (see history: render() rebuilds b:bex_snapshot to the new listing
+    " before it rewrites the buffer text, and a stray diff against that
+    " half-updated state during the switch back to a listing was reading
+    " everything as missing).
     if get(b:, 'bex_changes_view', 0)
-        let b:bex_changes_view = 0
-        setlocal modifiable
-        call s:render()
+        let g:bex_show_hidden = !g:bex_show_hidden
+        call s:position_header_popup()
+        return
     endif
+
+    " Guard set before s:render() below: render() rebuilds b:bex_snapshot
+    " to the new (full) listing *before* it clears and repopulates the
+    " buffer text (%delete _ then setline/append), so there's a brief
+    " window where the buffer is empty/partial while the snapshot already
+    " reflects everything. If a TextChanged autocmd fired in that window,
+    " bex#UpdateVirtualDirectory() -> s:QueryBuffer() would diff that
+    " empty/partial buffer against the full snapshot and flag every
+    " currently-tracked file as deleted. g:bex_toggling makes
+    " bex#UpdateVirtualDirectory() no-op during exactly this window.
+    let g:bex_toggling = 1
 
     let l:cursor_line = line('.')
     let l:cursor_id = matchstr(getline('.'), '^\/[0-9a-zA-Z]\+')
