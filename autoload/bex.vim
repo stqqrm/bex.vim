@@ -1487,6 +1487,26 @@ endfunction
 
 " Reverts whatever change is under the cursor while in the changes view
 " (mapped through <CR> via bex#OnSelect()'s dispatch at the top).
+" Locate which directory a changes-view line belongs to, by scanning
+" upward from that line for the nearest unindented header line (item
+" lines are always indented as '   [+~*-] ...').
+function! s:changes_view_owner_dir(lnum) abort
+    let l:owner_dir = ''
+    let l:home = expand('$HOME')
+    for l:ln in range(a:lnum - 1, 1, -1)
+        let l:hdr = trim(getline(l:ln))
+        if empty(l:hdr) | continue | endif
+        if l:hdr =~# '^[+~*-]\s' | continue | endif
+        let l:expanded = substitute(l:hdr, '^\~/', l:home . '/', '')
+        let l:expanded = substitute(l:expanded, '[/\\]$', '', '')
+        if has_key(g:bex_cache, l:expanded)
+            let l:owner_dir = l:expanded
+        endif
+        break
+    endfor
+    return l:owner_dir
+endfunction
+
 function! s:revert_change_under_cursor() abort
     let l:save_lnum = line('.')
     let l:line = getline('.')
@@ -1498,20 +1518,7 @@ function! s:revert_change_under_cursor() abort
         let l:entry_name = matchstr(l:line, '^\s*[+~*-]\s\+(new)\s\+\zs.*')
         if empty(l:entry_name) | return | endif
 
-        let l:owner_dir = ''
-        let l:home = expand('$HOME')
-        for l:ln in range(l:save_lnum - 1, 1, -1)
-            let l:hdr = trim(getline(l:ln))
-            if empty(l:hdr) | continue | endif
-            if l:hdr =~# '^[+~*-]\s' | continue | endif
-            let l:expanded = substitute(l:hdr, '^\~/', l:home . '/', '')
-            let l:expanded = substitute(l:expanded, '[/\\]$', '', '')
-            if has_key(g:bex_cache, l:expanded)
-                let l:owner_dir = l:expanded
-            endif
-            break
-        endfor
-
+        let l:owner_dir = s:changes_view_owner_dir(l:save_lnum)
         if empty(l:owner_dir) | return | endif
         let l:state = g:bex_cache[l:owner_dir]
         let l:state.entries = filter(copy(l:state.entries), {_, v -> v !=# l:entry_name})
@@ -1521,16 +1528,48 @@ function! s:revert_change_under_cursor() abort
             call remove(g:bex_cache, l:owner_dir)
         endif
     else
-        for [l:dir, l:state] in items(g:bex_cache)
-            let l:state.delete  = filter(copy(l:state.delete),  {_, v -> v.id !=# l:id})
-            let l:state.rename  = filter(copy(l:state.rename),  {_, v -> v.id !=# l:id})
-            let l:state.move_to = filter(copy(l:state.move_to), {_, v -> v.id !=# l:id})
-            let g:bex_cache[l:dir] = l:state
-            if empty(l:state.delete) && empty(l:state.rename)
-                \ && empty(l:state.entries) && empty(l:state.move_to)
-                call remove(g:bex_cache, l:dir)
-            endif
-        endfor
+        " Scope this to the single directory the cursor line belongs to,
+        " and remove only the one entry the cursor is actually on.
+        " Matching by id alone isn't enough for move_to: pasting the same
+        " source into one directory several times under different names
+        " produces multiple move_to entries that all share that source's
+        " id, and the same id can also appear as a move_to target in
+        " other directories entirely. Filtering by id globally (the old
+        " behavior) wiped out every one of those instead of just this
+        " line's entry.
+        let l:owner_dir = s:changes_view_owner_dir(l:save_lnum)
+        if empty(l:owner_dir) || !has_key(g:bex_cache, l:owner_dir) | return | endif
+        let l:state = g:bex_cache[l:owner_dir]
+
+        let l:sym = matchstr(l:line, '^\s*\zs[+~*-]')
+
+        if l:sym ==# '-'
+            let l:state.delete = filter(copy(l:state.delete), {_, v -> v.id !=# l:id})
+        elseif l:sym ==# '~'
+            let l:state.rename = filter(copy(l:state.rename), {_, v -> v.id !=# l:id})
+        else
+            " '+' (move, source already deleted) or '*' (copy) -- both
+            " live in move_to; disambiguate duplicate ids by name too,
+            " and drop only the first match so a genuine duplicate line
+            " loses just the one under the cursor.
+            let l:name = matchstr(l:line, '^\s*[+*]\s\+\/[0-9a-zA-Z]\+\s\+\zs.*')
+            let l:removed = 0
+            let l:kept = []
+            for l:m in l:state.move_to
+                if !l:removed && l:m.id ==# l:id && l:m.name ==# l:name
+                    let l:removed = 1
+                else
+                    call add(l:kept, l:m)
+                endif
+            endfor
+            let l:state.move_to = l:kept
+        endif
+
+        let g:bex_cache[l:owner_dir] = l:state
+        if empty(l:state.delete) && empty(l:state.rename)
+            \ && empty(l:state.entries) && empty(l:state.move_to)
+            call remove(g:bex_cache, l:owner_dir)
+        endif
     endif
 
     call s:normalize_cache()
