@@ -202,7 +202,13 @@ function! bex#ToggleHidden() abort
     let l:cursor_line = line('.')
     let l:cursor_id = matchstr(getline('.'), '^\/[0-9a-zA-Z]\+')
 
-    let l:plan = s:QueryBuffer()
+    " Query while the buffer still reflects the *pre-toggle* visibility.
+    " Merge in anything previously staged on a currently-hidden item (see
+    " s:merge_hidden_pending()) so that a directory whose only pending
+    " change lives on a dotfile doesn't get silently dropped here just
+    " because dotfiles happened to already be hidden when this toggle
+    " started.
+    let l:plan = s:merge_hidden_pending(b:bex_dir, s:QueryBuffer())
     let l:has_changes = !empty(l:plan.delete) || !empty(l:plan.rename)
         \ || !empty(l:plan.entries) || !empty(l:plan.move_to)
     if l:has_changes
@@ -320,7 +326,12 @@ function! bex#UpdateVirtualDirectory(path) abort
     if get(b:, 'bex_changes_view', 0) | return | endif
     if mode() =~# '^[vV]' || mode() ==# "\<C-v>" | return | endif
 
-    let l:state = s:QueryBuffer()
+    " Merge in anything previously staged on a currently-hidden item (see
+    " s:merge_hidden_pending()) before deciding whether there are pending
+    " changes -- otherwise a directory whose only pending change lives on
+    " a dotfile that's currently hidden would look empty here and get its
+    " entire cache entry wiped out below.
+    let l:state = s:merge_hidden_pending(a:path, s:QueryBuffer())
     let l:has_changes = !empty(l:state.delete) || !empty(l:state.rename)
         \ || !empty(l:state.entries) || !empty(l:state.move_to)
 
@@ -418,6 +429,44 @@ function! s:QueryBuffer() abort
     endfor
 
     return l:state
+endfunction
+
+" Carries forward any previously staged 'delete'/'rename' entries whose id
+" isn't present in the buffer's current snapshot -- i.e. a change staged on
+" a dotfile while it was shown, which then got hidden again by toggling
+" '.' off. QueryBuffer() only ever derives state from what's currently
+" rendered, so callers that use its result to overwrite g:bex_cache would
+" otherwise silently lose that pending change the moment dotfiles are
+" hidden (whether that's mid-toggle or from any later edit made while
+" hidden). 'entries' and 'move_to' don't need this: restore_cached_buffer()
+" always re-inserts those into the buffer regardless of the hidden-files
+" setting, so QueryBuffer() already recaptures them correctly on its own.
+function! s:merge_hidden_pending(dir, state) abort
+    if !has_key(g:bex_cache, a:dir) | return a:state | endif
+    let l:old = g:bex_cache[a:dir]
+
+    for l:key in ['delete', 'rename']
+        for l:item in get(l:old, l:key, [])
+            if has_key(b:bex_snapshot, l:item.id) | continue | endif
+
+            let l:seen = 0
+            for l:cur in a:state[l:key]
+                if l:cur.id ==# l:item.id | let l:seen = 1 | break | endif
+            endfor
+            if l:seen | continue | endif
+
+            call add(a:state[l:key], l:item)
+            " Carry the snapshot info along too -- apply_all()/validate_all()
+            " read entry details (path, is_dir) from the cached state's own
+            " 'snapshot' field, not from the live b:bex_snapshot, so without
+            " this the preserved entry would have nothing to act on.
+            if has_key(l:old.snapshot, l:item.id) && !has_key(a:state.snapshot, l:item.id)
+                let a:state.snapshot[l:item.id] = l:old.snapshot[l:item.id]
+            endif
+        endfor
+    endfor
+
+    return a:state
 endfunction
 
 " File System Application
