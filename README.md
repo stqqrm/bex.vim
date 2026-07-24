@@ -23,8 +23,24 @@ A simple ID-tracked file browser for Vim. The name **bex** stands for **Better E
 
 * Configuration
 
-```
+```vim
 let g:bex_header_at_bottom = 1
+```
+
+## Binds
+
+```
+RETURN
+    Navigate into file/directory.
+
+-
+    Navigate to previous directory.
+
+TAB
+    Toggle between viewing changes and current directory.
+
+.
+    Toggle visibility of dotfiles.
 ```
 
 ## Installation
