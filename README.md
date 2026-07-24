@@ -23,7 +23,7 @@ A simple ID-tracked file browser for Vim. The name **bex** stands for **Better E
 
 * Configuration
 
-```
+```vim
 let g:bex_header_at_bottom = 1
 ```
 
