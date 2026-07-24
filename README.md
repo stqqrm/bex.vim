@@ -30,7 +30,7 @@ let g:bex_header_at_bottom = 1
 ## Binds
 
 ```
-<code style="color : red">RETURN</code>
+**RETURN**
     Navigate into file/directory.
 
 -
