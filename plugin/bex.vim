@@ -23,25 +23,75 @@ function! s:rerender_if_bex()
     endtry
 endfunction
 
+" Raw numeric ANSI tokens (0-15), same convention as my-theme.vim: named
+" cterm colors (Yellow, Black, ...) are NOT stable across color-mode and
+" get routed through a fixed xterm-256 table once &t_Co reaches 256, so
+" we bypass that by targeting literal ANSI indices directly. Base colors
+" are the standard 0-7 slots; 'br_' prefixed tokens are their bright
+" 8-15 counterparts (e.g. red=1 / br_red=9).
+let s:bex_tokens = {
+      \ 'black':      0,
+      \ 'red':        1,
+      \ 'green':      2,
+      \ 'yellow':     3,
+      \ 'blue':       4,
+      \ 'magenta':    5,
+      \ 'cyan':       6,
+      \ 'white':      7,
+      \ 'br_black':   8,
+      \ 'br_red':     9,
+      \ 'br_green':   10,
+      \ 'br_yellow':  11,
+      \ 'br_blue':    12,
+      \ 'br_magenta': 13,
+      \ 'br_cyan':    14,
+      \ 'br_white':   15,
+      \ }
+
+" 8-color fallback: on terminals reporting &t_Co < 16 (e.g. raw Linux tty
+" with $TERM=linux), fold any bright token (8-15) down to its base 0-7
+" ANSI color and add 'bold' to preserve some visual distinction - the
+" same rule s:hi() applies in my-theme.vim.
+function! s:bex_hi(group, fg_token) abort
+    let l:cmd = 'highlight! ' . a:group
+    let l:attrs = []
+
+    if a:fg_token != '' && has_key(s:bex_tokens, a:fg_token)
+        let l:fg = s:bex_tokens[a:fg_token]
+        if &t_Co < 16 && l:fg >= 8 && l:fg <= 15
+            let l:fg = l:fg - 8
+            call add(l:attrs, 'bold')
+        endif
+        let l:cmd .= ' ctermfg=' . l:fg
+    endif
+
+    if !empty(l:attrs)
+        let l:cmd .= ' cterm=' . join(l:attrs, ',')
+        let l:cmd .= ' gui=' . join(l:attrs, ',')
+    endif
+
+    execute l:cmd
+endfunction
+
 function! bex#RedefineHighlights() abort
-    highlight! BexHeader          ctermfg=Yellow cterm=bold gui=bold
-    highlight! BexInfo            ctermfg=Black cterm=bold
-    highlight! BexID              ctermfg=Black cterm=bold
-    highlight! BexDir             ctermfg=Yellow cterm=bold
-    highlight! BexHiddenID        ctermfg=Black cterm=bold
-    highlight! BexHiddenDir       ctermfg=Yellow cterm=bold
-    highlight! BexHiddenFile      ctermfg=White
-    highlight! BexVisible         ctermfg=Green cterm=bold gui=bold
-    highlight! BexHidden          ctermfg=Red cterm=bold gui=bold
-    highlight! BexChangesDir      ctermfg=Yellow cterm=bold gui=bold
-    highlight! BexChangesDel      ctermfg=Red cterm=bold gui=bold
-    highlight! BexChangesAdd      ctermfg=Green
-    highlight! BexChangesRename   ctermfg=Cyan cterm=bold gui=bold
-    highlight! BexChangesMoveFrom ctermfg=Black cterm=bold
-    highlight! BexChangesMoveTo   ctermfg=Magenta cterm=bold gui=bold
-    highlight! BexChangesCopy     ctermfg=Blue
-    highlight! BexDotfilesOn      ctermfg=Green cterm=bold gui=bold
-    highlight! BexDotfilesOff     ctermfg=Red cterm=bold gui=bold
+    call s:bex_hi('BexHeader',          'br_yellow')
+    call s:bex_hi('BexInfo',            'black')
+    call s:bex_hi('BexID',              'black')
+    call s:bex_hi('BexDir',             'br_yellow')
+    call s:bex_hi('BexHiddenID',        'black')
+    call s:bex_hi('BexHiddenDir',       'br_yellow')
+    call s:bex_hi('BexHiddenFile',      'br_white')
+    call s:bex_hi('BexVisible',         'br_green')
+    call s:bex_hi('BexHidden',          'br_red')
+    call s:bex_hi('BexChangesDir',      'br_yellow')
+    call s:bex_hi('BexChangesDel',      'br_red')
+    call s:bex_hi('BexChangesAdd',      'br_green')
+    call s:bex_hi('BexChangesRename',   'br_cyan')
+    call s:bex_hi('BexChangesMoveFrom', 'black')
+    call s:bex_hi('BexChangesMoveTo',   'br_magenta')
+    call s:bex_hi('BexChangesCopy',     'br_blue')
+    call s:bex_hi('BexDotfilesOn',      'br_green')
+    call s:bex_hi('BexDotfilesOff',     'br_red')
 endfunction
 call bex#RedefineHighlights()
 
