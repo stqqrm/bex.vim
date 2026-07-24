@@ -25,10 +25,10 @@ endfunction
 
 function! bex#RedefineHighlights() abort
     highlight! BexHeader          ctermfg=Yellow cterm=bold gui=bold
-    highlight! BexInfo            ctermfg=8
-    highlight! BexID              ctermfg=8
+    highlight! BexInfo            ctermfg=Black cterm=bold
+    highlight! BexID              ctermfg=Black cterm=bold
     highlight! BexDir             ctermfg=Yellow cterm=bold
-    highlight! BexHiddenID        ctermfg=8
+    highlight! BexHiddenID        ctermfg=Black cterm=bold
     highlight! BexHiddenDir       ctermfg=Yellow cterm=bold
     highlight! BexHiddenFile      ctermfg=White
     highlight! BexVisible         ctermfg=Green cterm=bold gui=bold
@@ -37,7 +37,7 @@ function! bex#RedefineHighlights() abort
     highlight! BexChangesDel      ctermfg=Red cterm=bold gui=bold
     highlight! BexChangesAdd      ctermfg=Green
     highlight! BexChangesRename   ctermfg=Cyan cterm=bold gui=bold
-    highlight! BexChangesMoveFrom ctermfg=DarkGrey
+    highlight! BexChangesMoveFrom ctermfg=Black cterm=bold
     highlight! BexChangesMoveTo   ctermfg=Magenta cterm=bold gui=bold
     highlight! BexChangesCopy     ctermfg=Blue
     highlight! BexDotfilesOn      ctermfg=Green cterm=bold gui=bold
