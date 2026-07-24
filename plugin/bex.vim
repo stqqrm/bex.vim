@@ -75,10 +75,10 @@ endfunction
 
 function! bex#RedefineHighlights() abort
     call s:bex_hi('BexHeader',          'br_yellow')
-    call s:bex_hi('BexInfo',            'black')
-    call s:bex_hi('BexID',              'black')
+    call s:bex_hi('BexInfo',            'br_black')
+    call s:bex_hi('BexID',              'br_black')
     call s:bex_hi('BexDir',             'br_yellow')
-    call s:bex_hi('BexHiddenID',        'black')
+    call s:bex_hi('BexHiddenID',        'br_black')
     call s:bex_hi('BexHiddenDir',       'br_yellow')
     call s:bex_hi('BexHiddenFile',      'br_white')
     call s:bex_hi('BexVisible',         'br_green')
@@ -87,7 +87,7 @@ function! bex#RedefineHighlights() abort
     call s:bex_hi('BexChangesDel',      'br_red')
     call s:bex_hi('BexChangesAdd',      'br_green')
     call s:bex_hi('BexChangesRename',   'br_cyan')
-    call s:bex_hi('BexChangesMoveFrom', 'black')
+    call s:bex_hi('BexChangesMoveFrom', 'br_black')
     call s:bex_hi('BexChangesMoveTo',   'br_magenta')
     call s:bex_hi('BexChangesCopy',     'br_blue')
     call s:bex_hi('BexDotfilesOn',      'br_green')
