@@ -38,6 +38,9 @@ RETURN
 
 TAB
     Toggle between viewing changes and current directory.
+
+.
+    Toggle visibility of dotfiles.
 ```
 
 ## Installation
