@@ -30,7 +30,7 @@ let g:bex_header_at_bottom = 1
 ## Binds
 
 ```
-**RETURN**
+![RETURN](https://img.shields.io/badge/RETURN-red)
     Navigate into file/directory.
 
 -
