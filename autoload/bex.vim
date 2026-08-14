@@ -11,6 +11,14 @@ let g:bex_toggling          = get(g:, 'bex_toggling', 0)
 let g:bex_cursor_pos        = get(g:, 'bex_cursor_pos', {})
 let g:bex_header_at_bottom  = get(g:, 'bex_header_at_bottom', 0)
 
+" Image preview support. Entering (<CR>) a file whose extension is in this
+" list renders it in-place with chafa or ImageMagick instead of opening it
+" as a text buffer -- see s:image_backend(). Set g:bex_image_preview = 0 to
+" disable the feature entirely and always fall back to a normal :edit.
+let g:bex_image_extensions  = get(g:, 'bex_image_extensions',
+    \ ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'ico'])
+let g:bex_image_preview     = get(g:, 'bex_image_preview', 1)
+
 " Auto-refresh open bex windows when this file itself gets resourced (handy
 " while developing the plugin). This is deliberately scoped to bex.vim's
 " own path rather than a <buffer>-local SourcePost autocmd: SourcePost
@@ -72,6 +80,7 @@ function! bex#Open(path) abort
     nnoremap <buffer> <silent> . :call bex#ToggleHidden()<CR>
     nnoremap <buffer> <silent> <CR> :call bex#OnSelect()<CR>
     nnoremap <buffer> <silent> <Tab> :call bex#ToggleChangesView()<CR>
+    nnoremap <buffer> <silent> e :call bex#ExtractUnderCursor()<CR>
 
     call s:render()
 
@@ -254,6 +263,277 @@ function! bex#GoUp() abort
     endfor
 endfunction
 
+" Stages whatever item is under the cursor in the changes view (<Tab>) to
+" land in the bex directory that was open when <Tab> was pressed
+" (b:bex_dir) -- i.e. "extract [this cut/staged item] to the current
+" directory". Adds a move_to entry for that item's id here; apply_all()
+" already treats a move_to as an actual move (not a copy) whenever a
+" matching delete for the same id exists anywhere in g:bex_cache, which
+" is exactly the state a cut (delete staged in the source directory)
+" leaves things in, so nothing else needs to change on the source side --
+" delete a file in one directory, navigate to another, open the changes
+" view, and 'e' the deleted item to send it here instead of losing it.
+" Only meaningful from the changes view -- there's no staged-item concept
+" to extract from in the plain listing, where 'e' is a no-op.
+function! bex#ExtractUnderCursor() abort
+    if !get(b:, 'bex_changes_view', 0)
+        echo 'bex: e only works from the changes view (<Tab>)'
+        return
+    endif
+
+    let l:id = matchstr(getline('.'), '\/[0-9a-zA-Z]\+')
+    if empty(l:id)
+        echo 'bex: nothing to extract on this line'
+        return
+    endif
+
+    let l:owner_dir = s:changes_view_owner_dir(line('.'))
+    if empty(l:owner_dir)
+        echo 'bex: nothing to extract on this line'
+        return
+    endif
+
+    if l:owner_dir ==# b:bex_dir
+        echo 'bex: already staged in the current directory'
+        return
+    endif
+
+    " Resolve the item's name/type: prefer the owning directory's own
+    " cached snapshot (covers items only staged while dotfiles were
+    " shown, etc.), falling back to the last full listing snapshot taken
+    " for that directory.
+    let l:info = {}
+    if has_key(g:bex_cache, l:owner_dir) && has_key(g:bex_cache[l:owner_dir].snapshot, l:id)
+        let l:info = g:bex_cache[l:owner_dir].snapshot[l:id]
+    elseif has_key(g:bex_snapshots, l:owner_dir) && has_key(g:bex_snapshots[l:owner_dir], l:id)
+        let l:info = g:bex_snapshots[l:owner_dir][l:id]
+    endif
+    if empty(l:info)
+        echo 'bex: could not resolve item for extraction'
+        return
+    endif
+    let l:display = l:info.name . (l:info.is_dir ? '/' : '')
+
+    let l:state = has_key(g:bex_cache, b:bex_dir) ? g:bex_cache[b:bex_dir]
+        \ : {'snapshot': copy(b:bex_snapshot), 'delete': [], 'rename': [], 'entries': [], 'move_to': []}
+
+    for l:mov in l:state.move_to
+        if l:mov.id ==# l:id
+            echo 'bex: already staged to land here'
+            return
+        endif
+    endfor
+
+    call add(l:state.move_to, {'id': l:id, 'name': l:display})
+    let g:bex_cache[b:bex_dir] = l:state
+
+    call s:normalize_cache()
+    call s:show_changes_in_buffer()
+    echo 'bex: staged ' . l:display . ' to land in ' . b:bex_dir
+endfunction
+
+" Returns 1 if a:path's extension is one bex knows how to preview as an
+" image (see g:bex_image_extensions). Purely extension-based -- same
+" convention the rest of bex uses for filetype-ish decisions -- so it's
+" cheap to call on every <CR> without touching the filesystem twice.
+function! s:is_image(path) abort
+    let l:ext = tolower(fnamemodify(a:path, ':e'))
+    return !empty(l:ext) && index(g:bex_image_extensions, l:ext) >= 0
+endfunction
+
+" Picks the first available image-rendering backend and returns the
+" argv list to run it, or [] if neither is installed.
+"
+" Mirrors what fastfetch does for its own chafa-rendered logos: give
+" chafa an explicit character-cell size and otherwise leave everything
+" else -- symbol selection, dithering, font aspect ratio -- to its own
+" auto-detection/defaults. Earlier attempts to hand-tune those
+" (restricting symbols, forcing a work factor, forcing a font ratio)
+" were each fixing one symptom while making the overall output worse;
+" chafa's own heuristics, the same ones fastfetch relies on, do better
+" left alone.
+"
+" Color depth is the one exception, forced to full truecolor below
+" rather than left to auto-detection. chafa normally auto-detects color
+" depth from terminal-capability signals like $COLORTERM, but the image
+" preview here runs *inside* a Vim :terminal job (see
+" s:start_image_terminal() -> term_start()) -- i.e. chafa's own stdout
+" is being relayed through libvterm before it ever reaches the real
+" terminal emulator, and $COLORTERM doesn't reliably survive that
+" relay. When chafa can't confirm truecolor support this way it falls
+" back to a quantized ~256-color palette and dithers to approximate the
+" image, which shows up as a speckled cross-hatch texture with visibly
+" shifted colors -- not a real fidelity problem with the image, just
+" chafa being conservative about a color depth libvterm can actually
+" display just fine. Forcing it removes the guesswork.
+let g:bex_image_chafa_args  = get(g:, 'bex_image_chafa_args', ['--colors=full'])
+
+" ImageMagick's sixel output only actually renders on terminals with real
+" sixel support, which Vim's builtin :terminal (backed by libvterm) does
+" not have -- it's kept as a best-effort fallback for when chafa isn't
+" installed at all, since sixel is the only static-image format it can
+" produce on its own. (In practice, if you only have this fallback
+" available, expect the preview to render as raw sixel escape data
+" rather than an image, since libvterm can't interpret it -- installing
+" chafa is the real fix in that case.)
+"
+" The default args below pin the colorspace to sRGB and use Floyd-
+" Steinberg error-diffusion dithering. Without '-colorspace sRGB',
+" ImageMagick performs the color-reduction math for '-colors'/sixel
+" quantization in linear-light RGB, which comes out washed out and
+" shifted toward yellow-green once rendered. Without an explicit
+" '-dither', IM's default ordered/halftone dither leaves a visible
+" cross-hatch speckle pattern over the whole image instead of the
+" smoother, more photographic look error diffusion gives at typical
+" terminal cell resolutions. Both are quantization-time settings, so
+" they only affect the magick/convert fallback -- chafa does its own
+" quantization and isn't affected by g:bex_image_magick_args at all.
+let g:bex_image_magick_args = get(g:, 'bex_image_magick_args',
+    \ ['-geometry', '1024x768>', '-colorspace', 'sRGB',
+    \  '-dither', 'FloydSteinberg', '-colors', '256'])
+
+" True if any supported image-preview backend is installed. Cheap
+" existence check kept separate from s:image_backend() so callers that
+" just need to know "is preview possible at all" don't have to supply a
+" path/size first.
+function! s:image_backend_available() abort
+    return executable('chafa') || executable('magick') || executable('convert')
+endfunction
+
+" Character-cell bounding box to render the image into: the current
+" window's size, minus one row reserved for the header popup. This is
+" only ever fed to chafa's own '--size' argument below -- never to
+" term_start()'s term_rows/term_cols -- so it has no effect on the actual
+" Vim window or its statusline, unlike an earlier attempt at the same
+" idea.
+function! s:image_target_size() abort
+    let l:winid = win_getid()
+    return {
+        \ 'cols':  max([winwidth(l:winid), 1]),
+        \ 'lines': max([winheight(l:winid) - 1, 1]),
+        \ }
+endfunction
+
+" Builds the argv for rendering a:path at roughly a:cols x a:lines
+" character cells (see s:image_target_size()). Called fresh every time
+" the image is (re)drawn, including on window resize, so it always
+" matches the window's current size instead of a stale one.
+function! s:image_backend(path, cols, lines) abort
+    let l:cols  = max([a:cols, 1])
+    let l:lines = max([a:lines, 1])
+
+    if executable('chafa')
+        return ['chafa', '--size', l:cols . 'x' . l:lines] + g:bex_image_chafa_args + [a:path]
+    elseif executable('magick') || executable('convert')
+        " '-geometry WxH>' already preserves aspect ratio on its own
+        " (the trailing '>' only ever shrinks, never stretches), so no
+        " explicit cell size is needed here.
+        let l:bin = executable('magick') ? 'magick' : 'convert'
+        return [l:bin, a:path] + g:bex_image_magick_args + ['sixel:-']
+    endif
+    return []
+endfunction
+
+" (Re)draws a:path into the current window as a fresh terminal job,
+" replacing whatever terminal buffer (if any) was previously showing it.
+" Used both for the initial preview and to redraw on window resize --
+" term_start() always creates a brand-new buffer even with 'curwin', so
+" the old one (if this is a redraw of the same image, not a first-time
+" open) is wiped after the new one takes its place, and its now-stale
+" header popup is closed along with it via BufUnload.
+function! s:start_image_terminal(path) abort
+    let l:old_buf = (get(b:, 'bex_image_src', '') ==# a:path) ? bufnr('%') : -1
+
+    let l:size = s:image_target_size()
+    let l:cmd = s:image_backend(a:path, l:size.cols, l:size.lines)
+    if empty(l:cmd)
+        execute 'edit ' . fnameescape(a:path)
+        return
+    endif
+
+    " Deliberately NOT passing term_rows/term_cols to term_start(): those
+    " don't just set the pty's reported size, they tell Vim to size the
+    " *window* to match (padding/cropping otherwise), which was resizing
+    " the actual window -- and with it every other window's statusline --
+    " on each redraw. The terminal just fills the real window as-is; the
+    " sizing chafa needs comes from the '--size' argument built above
+    " instead, which has no effect on Vim's own layout.
+    call term_start(l:cmd, {
+        \ 'curwin': 1,
+        \ 'term_name': '[image] ' . fnamemodify(a:path, ':t'),
+        \ })
+    let b:bex_image_src = a:path
+
+    if l:old_buf > 0 && l:old_buf != bufnr('%') && bufexists(l:old_buf)
+        execute 'bwipeout! ' . l:old_buf
+    endif
+
+    " nonumber/norelativenumber/signcolumn=no: without these, a global
+    " 'number' or 'relativenumber' (or a gutter from another plugin)
+    " shows up as a column of digits/marks laid directly over the
+    " rendered image, since this is an ordinary Vim window like any
+    " other -- term_start() doesn't clear those options on its own.
+    setlocal nomodified nobuflisted nonumber norelativenumber
+    setlocal signcolumn=no nowrap nolist
+
+    nnoremap <buffer> <silent> - :call bex#ReturnFromImage()<CR>
+
+    augroup bex_image_header
+        autocmd! * <buffer>
+        autocmd VimResized,WinScrolled,WinEnter <buffer> call s:reposition_image_header()
+        autocmd VimResized                      <buffer> call s:redraw_image()
+        autocmd BufWinLeave,BufUnload           <buffer> call s:close_image_header()
+    augroup END
+
+    call s:show_image_header(a:path)
+endfunction
+
+" Re-renders the currently displayed image at the window's new size.
+" Bound to VimResized on the terminal buffer itself (see
+" s:start_image_terminal()) -- the earlier one-shot chafa/magick job has
+" already exited by the time a resize happens, so its output is just
+" static text as far as Vim is concerned and won't reflow on its own;
+" this reruns the backend from scratch against the new dimensions.
+function! s:redraw_image() abort
+    if !exists('b:bex_image_src') || empty(b:bex_image_src) | return | endif
+    if &buftype !=# 'terminal' | return | endif
+    call s:start_image_terminal(b:bex_image_src)
+endfunction
+
+" Bound to '-' in the image-preview buffer: switches back to browsing in
+" bex (reusing the current window) and cleans up the now-unneeded
+" terminal buffer behind it. bex#Toggle() finds whatever bex buffer is
+" already sitting hidden -- bex#OnSelect() closes the bex *window* when
+" opening a file, never the buffer -- and switches straight to it, so
+" this lands back exactly where browsing left off, cursor position and
+" all.
+function! bex#ReturnFromImage() abort
+    if &buftype !=# 'terminal' || !exists('b:bex_image_src')
+        return
+    endif
+    let l:img_buf = bufnr('%')
+    call bex#Toggle()
+    if bufexists(l:img_buf) && l:img_buf != bufnr('%')
+        execute 'bwipeout! ' . l:img_buf
+    endif
+endfunction
+
+" Replaces the plain `execute 'edit ' . fnameescape(path)` bex#OnSelect()
+" used to call directly. When the target is a previewable image and a
+" backend is installed, render it into the current window via
+" :terminal instead of loading it as a text buffer, and keep it sized to
+" the window as it's resized; anything else (not an image, no backend
+" found, or Vim built without +terminal) falls straight through to the
+" normal :edit, so behavior is unchanged unless preview is actually
+" possible.
+function! s:open_file_or_image(path) abort
+    if g:bex_image_preview && s:is_image(a:path) && exists('*term_start') && s:image_backend_available()
+        call s:start_image_terminal(a:path)
+        return
+    endif
+    execute 'edit ' . fnameescape(a:path)
+endfunction
+
 function! bex#OnSelect() abort
     if get(b:, 'bex_changes_view', 0)
         call s:revert_change_under_cursor()
@@ -277,11 +557,24 @@ function! bex#OnSelect() abort
             endif
             setlocal nomodified
             wincmd p
-            execute 'edit ' . fnameescape(l:path)
+
+            " Close the leftover bex-window split BEFORE opening the
+            " target, not after: s:open_file_or_image() -> term_start()
+            " for an image preview captures the window's size as it
+            " exists the instant the job launches, and chafa renders
+            " into that once, immediately. If the bex window (still
+            " occupying half the split) hasn't been closed yet, the
+            " terminal launches at that transient half-size and there's
+            " no later event that re-triggers it -- closing a window is
+            " an internal layout change, not the outer-terminal resize
+            " that VimResized (and s:redraw_image()) actually watches
+            " for. Closing first means the remaining window is already
+            " at its true final size before anything renders into it.
             let l:bex_win = bufwinnr(l:bex_buf)
             if l:bex_win != -1
                 execute l:bex_win . 'close'
             endif
+            call s:open_file_or_image(l:path)
 
             " Do this last, and by buffer number rather than s:close_header_popup()'s
             " b: lookup: the vsplit above briefly opens a second window onto the
@@ -1200,6 +1493,68 @@ function! s:close_header_popup() abort
         call popup_close(b:bex_header_popup)
     endif
     let b:bex_header_popup = -1
+endfunction
+
+" Mirrors bex's own header popup for an opened image preview, showing the
+" image's full path (home-shortened, same convention as
+" s:position_header_popup()) rather than just its containing directory's
+" last path component. bex#OnSelect() always closes the bex window once
+" the image is showing, so this can't simply reuse b:bex_header_popup /
+" the bex <buffer> autogroup -- both are scoped to a buffer that's about
+" to disappear. It runs its own small, equivalent autogroup on the
+" terminal buffer instead: reposition on resize/scroll, redraw the image
+" itself on resize, and close when that buffer goes away (all wired up in
+" s:start_image_terminal()).
+function! s:show_image_header(path) abort
+    if !exists('*popup_create') | return | endif
+
+    let l:winid = win_getid()
+    let l:screenpos = win_screenpos(l:winid)
+    if l:screenpos[0] == 0 | return | endif
+
+    call s:ensure_header_highlights()
+
+    let l:home = expand('$HOME')
+    let l:text = stridx(a:path, l:home) == 0 ? '~/' . a:path[len(l:home)+1:] : a:path
+    let l:content = [{'text': l:text, 'props': []}]
+
+    let l:row = g:bex_header_at_bottom
+        \ ? l:screenpos[0] + winheight(l:winid) - 1
+        \ : l:screenpos[0]
+
+    let b:bex_image_popup = popup_create(l:content, {
+        \ 'line': l:row,
+        \ 'col': l:screenpos[1],
+        \ 'pos': 'topleft',
+        \ 'minwidth': winwidth(l:winid),
+        \ 'maxwidth': winwidth(l:winid),
+        \ 'wrap': 0,
+        \ 'highlight': 'BexHeader',
+        \ 'zindex': 50,
+        \ })
+endfunction
+
+function! s:reposition_image_header() abort
+    if !exists('b:bex_image_popup') || b:bex_image_popup <= 0 | return | endif
+    let l:winid = win_getid()
+    let l:screenpos = win_screenpos(l:winid)
+    if l:screenpos[0] == 0 | return | endif
+    let l:row = g:bex_header_at_bottom
+        \ ? l:screenpos[0] + winheight(l:winid) - 1
+        \ : l:screenpos[0]
+    call popup_move(b:bex_image_popup, {
+        \ 'line': l:row,
+        \ 'col': l:screenpos[1],
+        \ 'minwidth': winwidth(l:winid),
+        \ 'maxwidth': winwidth(l:winid),
+        \ })
+endfunction
+
+function! s:close_image_header() abort
+    if exists('b:bex_image_popup') && b:bex_image_popup > 0
+        call popup_close(b:bex_image_popup)
+    endif
+    let b:bex_image_popup = -1
 endfunction
 
 " Keep the cursor from ever resting on the reserved spacer line, in any
