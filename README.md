@@ -51,7 +51,7 @@ let g:bex_gui_br_magenta = '#FF55FF'
 let g:bex_gui_br_cyan    = '#55FFFF'
 let g:bex_gui_br_white   = '#FFFFFF'
 ```
-To change highlight groups you simply apply a valid token, you can find token list here [here](#valid-color-tokens)
+To change highlight groups you simply apply a valid token, you can find token list [here](#valid-color-tokens)
 ```vim
 let g:bex_hi_BexHeader          = 'br_yellow'
 let g:bex_hi_BexInfo            = 'br_black'
@@ -105,6 +105,24 @@ g+d
 ```vim
 Plug 'stqqrm/bex.vim'
 ```
+
+## Color Tokens
+0   black
+1   red
+2   green
+3   yellow
+4   blue
+5   magenta
+6   cyan
+7   white
+8   br_black
+9   br_red
+10  br_green
+11  br_yellow
+12  br_blue
+13  br_magenta
+14  br_cyan
+15  br_white
 
 ## Todo
 
