@@ -68,6 +68,29 @@ let s:bex_gui_colors = [
       \ g:bex_gui_br_blue, g:bex_gui_br_magenta, g:bex_gui_br_cyan, g:bex_gui_br_white
       \ ]
 
+let g:bex_hi_BexHeader          = get(g:, 'bex_hi_BexHeader',          'br_yellow')
+let g:bex_hi_BexInfo            = get(g:, 'bex_hi_BexInfo',            'br_black')
+let g:bex_hi_BexDir             = get(g:, 'bex_hi_BexDir',             'br_yellow')
+let g:bex_hi_BexFile            = get(g:, 'bex_hi_BexFile',            'br_white')
+let g:bex_hi_BexHiddenDir       = get(g:, 'bex_hi_BexHiddenDir',       'yellow')
+let g:bex_hi_BexHiddenFile      = get(g:, 'bex_hi_BexHiddenFile',      'white')
+let g:bex_hi_BexVisible         = get(g:, 'bex_hi_BexVisible',         'br_green')
+let g:bex_hi_BexHidden          = get(g:, 'bex_hi_BexHidden',          'br_red')
+let g:bex_hi_BexID              = get(g:, 'bex_hi_BexID',              'br_black')
+let g:bex_hi_BexHiddenID        = get(g:, 'bex_hi_BexHiddenID',        'br_black')
+let g:bex_hi_BexExec            = get(g:, 'bex_hi_BexExec',            'br_green')
+let g:bex_hi_BexSymlink         = get(g:, 'bex_hi_BexSymlink',         'br_blue')
+
+let g:bex_hi_BexChangesDir      = get(g:, 'bex_hi_BexChangesDir',      'br_yellow')
+let g:bex_hi_BexChangesDel      = get(g:, 'bex_hi_BexChangesDel',      'br_red')
+let g:bex_hi_BexChangesAdd      = get(g:, 'bex_hi_BexChangesAdd',      'br_green')
+let g:bex_hi_BexChangesRename   = get(g:, 'bex_hi_BexChangesRename',   'br_cyan')
+let g:bex_hi_BexChangesMoveFrom = get(g:, 'bex_hi_BexChangesMoveFrom', 'br_black')
+let g:bex_hi_BexChangesMoveTo   = get(g:, 'bex_hi_BexChangesMoveTo',   'br_magenta')
+let g:bex_hi_BexChangesCopy     = get(g:, 'bex_hi_BexChangesCopy',     'br_blue')
+let g:bex_hi_BexDotfilesOn      = get(g:, 'bex_hi_BexDotfilesOn',      'br_green')
+let g:bex_hi_BexDotfilesOff     = get(g:, 'bex_hi_BexDotfilesOff',     'br_red')
+
 " 8-color fallback: on terminals reporting &t_Co < 16, fold any bright
 " token (8-15) down to its base 0-7 ANSI color and add 'bold' to keep some
 " visual distinction.
@@ -97,28 +120,28 @@ function! s:bex_hi(group, fg_token) abort
 endfunction
 
 function! bex#RedefineHighlights() abort
-    call s:bex_hi('BexHeader',          'br_yellow')
-    call s:bex_hi('BexInfo',            'br_black')
-    call s:bex_hi('BexDir',             'br_yellow')
-    call s:bex_hi('BexFile',            'br_white')
-    call s:bex_hi('BexHiddenDir',       'yellow')
-    call s:bex_hi('BexHiddenFile',      'white')
-    call s:bex_hi('BexVisible',         'br_green')
-    call s:bex_hi('BexHidden',          'br_red')
-    call s:bex_hi('BexID',              'br_black')
-    call s:bex_hi('BexHiddenID',        'br_black')
-    call s:bex_hi('BexExec',            'br_green')
-    call s:bex_hi('BexSymlink',         'br_blue')
+    call s:bex_hi('BexHeader',          g:bex_hi_BexHeader)
+    call s:bex_hi('BexInfo',            g:bex_hi_BexInfo)
+    call s:bex_hi('BexDir',             g:bex_hi_BexDir)
+    call s:bex_hi('BexFile',            g:bex_hi_BexFile)
+    call s:bex_hi('BexHiddenDir',       g:bex_hi_BexHiddenDir)
+    call s:bex_hi('BexHiddenFile',      g:bex_hi_BexHiddenFile)
+    call s:bex_hi('BexVisible',         g:bex_hi_BexVisible)
+    call s:bex_hi('BexHidden',          g:bex_hi_BexHidden)
+    call s:bex_hi('BexID',              g:bex_hi_BexID)
+    call s:bex_hi('BexHiddenID',        g:bex_hi_BexHiddenID)
+    call s:bex_hi('BexExec',            g:bex_hi_BexExec)
+    call s:bex_hi('BexSymlink',         g:bex_hi_BexSymlink)
 
-    call s:bex_hi('BexChangesDir',      'br_yellow')
-    call s:bex_hi('BexChangesDel',      'br_red')
-    call s:bex_hi('BexChangesAdd',      'br_green')
-    call s:bex_hi('BexChangesRename',   'br_cyan')
-    call s:bex_hi('BexChangesMoveFrom', 'br_black')
-    call s:bex_hi('BexChangesMoveTo',   'br_magenta')
-    call s:bex_hi('BexChangesCopy',     'br_blue')
-    call s:bex_hi('BexDotfilesOn',      'br_green')
-    call s:bex_hi('BexDotfilesOff',     'br_red')
+    call s:bex_hi('BexChangesDir',      g:bex_hi_BexChangesDir)
+    call s:bex_hi('BexChangesDel',      g:bex_hi_BexChangesDel)
+    call s:bex_hi('BexChangesAdd',      g:bex_hi_BexChangesAdd)
+    call s:bex_hi('BexChangesRename',   g:bex_hi_BexChangesRename)
+    call s:bex_hi('BexChangesMoveFrom', g:bex_hi_BexChangesMoveFrom)
+    call s:bex_hi('BexChangesMoveTo',   g:bex_hi_BexChangesMoveTo)
+    call s:bex_hi('BexChangesCopy',     g:bex_hi_BexChangesCopy)
+    call s:bex_hi('BexDotfilesOn',      g:bex_hi_BexDotfilesOn)
+    call s:bex_hi('BexDotfilesOff',     g:bex_hi_BexDotfilesOff)
 endfunction
 call bex#RedefineHighlights()
 
