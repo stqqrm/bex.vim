@@ -62,7 +62,8 @@ RETURN
     Navigate to previous directory.
 
 TAB
-    Toggle between viewing file system modifications and current directory. Inside interface RETURN can be pressed to revert modifications and E can be used to extract to current directory.
+    Toggle between viewing file system modifications and current directory.
+    Inside interface RETURN can be pressed to revert modifications and E can be used to extract to current directory.
 
 .
     Toggle visibility of dotfiles.
