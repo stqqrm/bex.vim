@@ -8,9 +8,7 @@ A simple ID-tracked file browser for Vim. The name **bex** stands for **Better E
 
 ## Features
 
-```
 * Support for rendering images with chafa.
-```
 
 ## Usage
 
