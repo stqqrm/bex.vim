@@ -25,7 +25,7 @@ A simple ID-tracked file browser for Vim. The name **bex** stands for **Better E
     reload buffers
 ```
 
-* Configuration
+## Configuration
 
 ```vim
 let g:bex_header_at_bottom = 1
