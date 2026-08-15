@@ -6,6 +6,12 @@ A simple ID-tracked file browser for Vim. The name **bex** stands for **Better E
 
 ![bex.vim demo](images/demo.png)
 
+## Features
+
+```
+* Support for rendering images with chafa.
+```
+
 ## Usage
 
 * Open explorer
@@ -25,6 +31,26 @@ A simple ID-tracked file browser for Vim. The name **bex** stands for **Better E
 
 ```vim
 let g:bex_header_at_bottom = 1
+```
+You can also change theme if termguicolors is enabled.
+```vim
+let g:bex_gui_black      = '#000000'
+let g:bex_gui_red        = '#AA0000'
+let g:bex_gui_green      = '#00AA00'
+let g:bex_gui_yellow     = '#AA5500'
+let g:bex_gui_blue       = '#0000AA'
+let g:bex_gui_magenta    = '#AA00AA'
+let g:bex_gui_cyan       = '#00AAAA'
+let g:bex_gui_white      = '#AAAAAA'
+
+let g:bex_gui_br_black   = '#555555'
+let g:bex_gui_br_red     = '#FF5555'
+let g:bex_gui_br_green   = '#55FF55'
+let g:bex_gui_br_yellow  = '#FFFF55'
+let g:bex_gui_br_blue    = '#5555FF'
+let g:bex_gui_br_magenta = '#FF55FF'
+let g:bex_gui_br_cyan    = '#55FFFF'
+let g:bex_gui_br_white   = '#FFFFFF'
 ```
 
 ## Binds
