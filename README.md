@@ -30,7 +30,8 @@ Moving Bex header to top/bottom can be set.
 ```vim
 let g:bex_header_at_bottom = 1
 ```
-You can change theme if termguicolors is enabled.
+
+To change theme for true color you can set these global variables if termguicolors is set, it defaults to whatever ANSI colors are already set, if notermguicolors is set, it uses cterm colors, and 8 color mode with bold is set if t_Co < 16.
 ```vim
 let g:bex_gui_black      = '#000000'
 let g:bex_gui_red        = '#AA0000'
