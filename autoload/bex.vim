@@ -1,5 +1,5 @@
 " File: autoload/bex.vim
-" Description: Cleaned, State-Driven ID-Tracked File Browser Engine
+" Description: ID-Tracked File Browser Engine
 
 " --- Global State Initializations ---
 let g:bex_id_counter        = get(g:, 'bex_id_counter', 0)
@@ -11,26 +11,24 @@ let g:bex_toggling          = get(g:, 'bex_toggling', 0)
 let g:bex_cursor_pos        = get(g:, 'bex_cursor_pos', {})
 let g:bex_header_at_bottom  = get(g:, 'bex_header_at_bottom', 0)
 
-" Central registry of every bex-owned popup id -> the buffer it was
-" created for. See s:bex_gc_popups() below for what this is for.
+" Registry of every bex-owned popup id -> the buffer it was created for.
+" See s:bex_gc_popups() for what this is for.
 let g:bex_popup_registry     = get(g:, 'bex_popup_registry', {})
 
-" Image preview support. Entering (<CR>) a file whose extension is in this
-" list renders it in-place with chafa or ImageMagick instead of opening it
-" as a text buffer -- see s:image_backend(). Set g:bex_image_preview = 0 to
-" disable the feature entirely and always fall back to a normal :edit.
+" Image preview: entering (<CR>) a file whose extension is in this list
+" renders it in-place with chafa/ImageMagick instead of :edit. Set
+" g:bex_image_preview = 0 to disable and always fall back to :edit.
 let g:bex_image_extensions  = get(g:, 'bex_image_extensions',
     \ ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'ico'])
 let g:bex_image_preview     = get(g:, 'bex_image_preview', 1)
+let g:bex_image_chafa_args  = get(g:, 'bex_image_chafa_args', [])
+let g:bex_image_magick_args = get(g:, 'bex_image_magick_args',
+    \ ['-geometry', '1024x768>', '-colorspace', 'sRGB',
+    \  '-dither', 'FloydSteinberg', '-colors', '256'])
 
-" Auto-refresh open bex windows when this file itself gets resourced (handy
-" while developing the plugin). This is deliberately scoped to bex.vim's
-" own path rather than a <buffer>-local SourcePost autocmd: SourcePost
-" matches on the sourced file, and <buffer> only filters by "is bex the
-" active buffer right now" — so a buffer-local version fires on *every*
-" script sourced anywhere (colorscheme reloads, lazy-loaded plugins,
-" ftplugin files, ...) as long as the user happens to be sitting in a bex
-" buffer at that moment, silently resetting their cursor position.
+" Scoped to bex.vim's own path (not a <buffer>-local autocmd) so it only
+" fires when this file itself is resourced, not every script sourced
+" while a bex buffer happens to be active.
 let s:bex_script_path = expand('<sfile>:p')
 
 function! s:on_bex_resourced() abort
@@ -67,17 +65,10 @@ function! bex#Open(path) abort
     let b:bex_header_popup = -1
     let b:bex_changes_view = 0
 
-    " Tell coc.nvim (and compatible completion/LSP/diagnostics engines) to
-    " leave this buffer alone entirely. bex uses buftype=acwrite, which
-    " looks like a "real" editable file rather than a scratch buffer, so
-    " coc.nvim was attaching its usual document-sync/diagnostics machinery
-    " to it — and that machinery's own CursorHold-triggered background
-    " housekeeping (sourcing its internal compat shims) was silently
-    " resetting the cursor mid-navigation. b:coc_enabled / b:coc_suggest_disable
-    " are the standard opt-out flags coc.nvim recognizes for exactly this
-    " situation; NERDTree, fern.vim, and other file-explorer-style plugins
-    " set the same flags for the same reason. Harmless no-op if coc.nvim
-    " isn't installed.
+    " Opt bex out of coc.nvim's document-sync/diagnostics machinery: its
+    " CursorHold-triggered housekeeping was silently resetting the cursor
+    " mid-navigation. Standard flags other file explorers set for the same
+    " reason; no-op if coc.nvim isn't installed.
     let b:coc_enabled = 0
     let b:coc_suggest_disable = 1
 
@@ -85,6 +76,7 @@ function! bex#Open(path) abort
     nnoremap <buffer> <silent> <CR> :call bex#OnSelect()<CR>
     nnoremap <buffer> <silent> <Tab> :call bex#ToggleChangesView()<CR>
     nnoremap <buffer> <silent> e :call bex#ExtractUnderCursor()<CR>
+    nnoremap <buffer> <silent> gd :call bex#GotoDefinition()<CR>
 
     call s:render()
 
@@ -121,19 +113,14 @@ endfunction
 function! bex#Reload(...) abort
     let l:path = get(a:, 1, '')
 
-    " Sweep any leftover image/header popups first -- see
-    " s:close_all_bex_popups() for why this can't just rely on the
-    " terminal buffer's own BufUnload/BufWinLeave cleanup here.
     call s:close_all_bex_popups()
 
-    " Reset all global state
     let g:bex_cache      = {}
     let g:bex_snapshots  = {}
     let g:bex_id_counter = 0
     let g:bex_path_ids   = {}
     let g:bex_cursor_pos = {}
 
-    " Find and wipe all bex buffers, then open fresh
     let l:dir = ''
     for l:buf in range(1, bufnr('$'))
         if getbufvar(l:buf, '&filetype') ==# 'bex' && bufexists(l:buf)
@@ -144,15 +131,13 @@ function! bex#Reload(...) abort
         endif
     endfor
 
-    " Prefer explicit path, then previous bex dir, then cwd
     let l:open = !empty(l:path) ? l:path : (!empty(l:dir) ? l:dir : '')
     call bex#Open(l:open)
 endfunction
 
 function! bex#Navigate(path, ...) abort
-    " Optional a:1 = allow_virtual (1 to permit navigating into a
-    " directory that doesn't exist on disk yet, e.g. a freshly typed
-    " entry the user is about to create).
+    " a:1 = allow_virtual (1 to navigate into a directory that doesn't
+    " exist on disk yet, e.g. a freshly typed entry about to be created).
     let l:allow_virtual = get(a:, 1, 0)
 
     let l:dir = fnamemodify(a:path, ':p')
@@ -162,13 +147,9 @@ function! bex#Navigate(path, ...) abort
         return
     endif
 
-    " Navigating away always leaves the changes view first — the buffer's
-    " about to hold a different directory's listing, which needs to be
-    " modifiable to build. Must actually re-render here (not just flip the
-    " flag and modifiable), since the very next line queries buffer text
-    " for pending edits — leaving stale changes-view text in place would
-    " make every previously-tracked file look deleted (nothing there
-    " starts with a valid ID).
+    " Leave the changes view first and actually re-render (not just flip
+    " the flag) -- the next line queries buffer text for pending edits,
+    " and stale changes-view text would make every tracked file look deleted.
     if get(b:, 'bex_changes_view', 0)
         let b:bex_changes_view = 0
         setlocal modifiable
@@ -189,44 +170,24 @@ function! bex#Navigate(path, ...) abort
 endfunction
 
 function! bex#ToggleHidden() abort
-    " While viewing the changes summary (<Tab>), there's no listing in the
-    " buffer to toggle -- it's read-only summary text built from
-    " g:bex_cache, unrelated to the current dotfiles state. Just flip the
-    " flag and refresh the header popup's on/off indicator in place; the
-    " new state takes effect next time the listing itself is rendered
-    " (e.g. when <Tab> returns to it). Deliberately does not leave the
-    " changes view, touch the buffer, or call s:render() here -- doing so
-    " previously caused every tracked file to get flagged for deletion
-    " (see history: render() rebuilds b:bex_snapshot to the new listing
-    " before it rewrites the buffer text, and a stray diff against that
-    " half-updated state during the switch back to a listing was reading
-    " everything as missing).
+    " In the changes view there's no listing to toggle -- just flip the
+    " flag and refresh the header's on/off indicator. Deliberately does
+    " NOT call s:render() here: render() rebuilds b:bex_snapshot to the
+    " new listing before rewriting buffer text, and a stray diff during
+    " that window previously flagged every tracked file as deleted.
     if get(b:, 'bex_changes_view', 0)
         let g:bex_show_hidden = !g:bex_show_hidden
         call s:position_header_popup()
         return
     endif
 
-    " Guard set before s:render() below: render() rebuilds b:bex_snapshot
-    " to the new (full) listing *before* it clears and repopulates the
-    " buffer text (%delete _ then setline/append), so there's a brief
-    " window where the buffer is empty/partial while the snapshot already
-    " reflects everything. If a TextChanged autocmd fired in that window,
-    " bex#UpdateVirtualDirectory() -> s:QueryBuffer() would diff that
-    " empty/partial buffer against the full snapshot and flag every
-    " currently-tracked file as deleted. g:bex_toggling makes
-    " bex#UpdateVirtualDirectory() no-op during exactly this window.
+    " g:bex_toggling makes bex#UpdateVirtualDirectory() a no-op during the
+    " render() below, for the same "stale buffer vs. new snapshot" reason.
     let g:bex_toggling = 1
 
     let l:cursor_line = line('.')
     let l:cursor_id = matchstr(getline('.'), '^\/[0-9a-zA-Z]\+')
 
-    " Query while the buffer still reflects the *pre-toggle* visibility.
-    " Merge in anything previously staged on a currently-hidden item (see
-    " s:merge_hidden_pending()) so that a directory whose only pending
-    " change lives on a dotfile doesn't get silently dropped here just
-    " because dotfiles happened to already be hidden when this toggle
-    " started.
     let l:plan = s:merge_hidden_pending(b:bex_dir, s:QueryBuffer())
     let l:has_changes = !empty(l:plan.delete) || !empty(l:plan.rename)
         \ || !empty(l:plan.entries) || !empty(l:plan.move_to)
@@ -236,12 +197,9 @@ function! bex#ToggleHidden() abort
     let g:bex_show_hidden = !g:bex_show_hidden
     call s:render()
 
-    " IDs stay stable across a dotfiles toggle (only render() runs, not
-    " apply_all(), so g:bex_path_ids isn't reassigned) — find the same
+    " IDs stay stable across a toggle (only render() ran) -- find the same
     " item's line again rather than leaving the cursor wherever render()
-    " defaults to. Falls back to a clamped line number if the item just
-    " became hidden (or shown, if it was already the file the cursor was
-    " on before toggling dotfiles off left nothing to find).
+    " defaults to.
     let l:found = 0
     if !empty(l:cursor_id)
         for l:lnum in range(s:content_start(), s:content_end())
@@ -273,18 +231,11 @@ function! bex#GoUp() abort
     endfor
 endfunction
 
-" Stages whatever item is under the cursor in the changes view (<Tab>) to
-" land in the bex directory that was open when <Tab> was pressed
-" (b:bex_dir) -- i.e. "extract [this cut/staged item] to the current
-" directory". Adds a move_to entry for that item's id here; apply_all()
-" already treats a move_to as an actual move (not a copy) whenever a
-" matching delete for the same id exists anywhere in g:bex_cache, which
-" is exactly the state a cut (delete staged in the source directory)
-" leaves things in, so nothing else needs to change on the source side --
-" delete a file in one directory, navigate to another, open the changes
-" view, and 'e' the deleted item to send it here instead of losing it.
-" Only meaningful from the changes view -- there's no staged-item concept
-" to extract from in the plain listing, where 'e' is a no-op.
+" Stages the item under the cursor in the changes view to land in the
+" directory that was open when <Tab> was pressed. apply_all() already
+" treats a move_to as a real move whenever a matching delete exists
+" elsewhere in g:bex_cache -- exactly the state a cut leaves things in --
+" so nothing else needs to change on the source side.
 function! bex#ExtractUnderCursor() abort
     if !get(b:, 'bex_changes_view', 0)
         echo 'bex: e only works from the changes view (<Tab>)'
@@ -308,10 +259,6 @@ function! bex#ExtractUnderCursor() abort
         return
     endif
 
-    " Resolve the item's name/type: prefer the owning directory's own
-    " cached snapshot (covers items only staged while dotfiles were
-    " shown, etc.), falling back to the last full listing snapshot taken
-    " for that directory.
     let l:info = {}
     if has_key(g:bex_cache, l:owner_dir) && has_key(g:bex_cache[l:owner_dir].snapshot, l:id)
         let l:info = g:bex_cache[l:owner_dir].snapshot[l:id]
@@ -342,190 +289,108 @@ function! bex#ExtractUnderCursor() abort
     echo 'bex: staged ' . l:display . ' to land in ' . b:bex_dir
 endfunction
 
-" Returns 1 if a:path's extension is one bex knows how to preview as an
-" image (see g:bex_image_extensions). Purely extension-based -- same
-" convention the rest of bex uses for filetype-ish decisions -- so it's
-" cheap to call on every <CR> without touching the filesystem twice.
+" Mapped to gd: follow the symlink under the cursor to where it actually
+" points, rather than the symlink entry itself.
+function! bex#GotoDefinition() abort
+    if get(b:, 'bex_changes_view', 0) | return | endif
+
+    let l:match = matchlist(getline('.'), '^\(\/[0-9a-zA-Z]\+\)\s\+\(.*\)$')
+    if empty(l:match) || !has_key(b:bex_snapshot, l:match[1])
+        echo 'bex: nothing under the cursor'
+        return
+    endif
+
+    let l:item = b:bex_snapshot[l:match[1]]
+    if !get(l:item, 'is_link', 0)
+        echo 'bex: not a symlink'
+        return
+    endif
+
+    let l:target = resolve(l:item.path)
+    if !isdirectory(l:target) && !filereadable(l:target)
+        echo 'bex: broken symlink -> ' . l:target
+        return
+    endif
+
+    if isdirectory(l:target)
+        call bex#Navigate(l:target)
+        return
+    endif
+
+    call bex#Navigate(fnamemodify(l:target, ':h'))
+    let l:tname = fnamemodify(l:target, ':t')
+    for l:lnum in range(s:content_start(), s:content_end())
+        if getline(l:lnum) =~# '\s' . escape(l:tname, ' /.\*[]^$~') . '\ze\(\s\|$\)'
+            call cursor(l:lnum, 1) | break
+        endif
+    endfor
+endfunction
+
+" Extension-based check, same convention bex uses elsewhere for
+" filetype-ish decisions -- cheap to call on every <CR>.
 function! s:is_image(path) abort
     let l:ext = tolower(fnamemodify(a:path, ':e'))
     return !empty(l:ext) && index(g:bex_image_extensions, l:ext) >= 0
 endfunction
 
-" Picks the first available image-rendering backend and returns the
-" argv list to run it, or [] if neither is installed.
-"
-" Mirrors what fastfetch does for its own chafa-rendered logos: give
-" chafa an explicit character-cell size and otherwise leave everything
-" else -- symbol selection, dithering, font aspect ratio -- to its own
-" auto-detection/defaults. Earlier attempts to hand-tune those
-" (restricting symbols, forcing a work factor, forcing a font ratio)
-" were each fixing one symptom while making the overall output worse;
-" chafa's own heuristics, the same ones fastfetch relies on, do better
-" left alone.
-"
-" Color depth is handled separately from the rest of g:bex_image_chafa_args
-" (see s:chafa_color_arg() below) rather than being folded into this list's
-" static default. It can't be a fixed default because the right value
-" depends on 'termguicolors' at call time, not on anything knowable in
-" advance: Vim's :terminal buffer (see s:start_image_terminal() ->
-" term_start()) passes 24-bit color through as-is when 'termguicolors' is
-" on, but re-quantizes it down to a 256-color approximation when it's off
-" -- and that's a *second*, cruder quantization pass stacked on top of
-" whatever chafa itself already did. Asking chafa for truecolor and then
-" having Vim mangle it back down produces worse results than just having
-" chafa quantize straight to 256 itself, since chafa's built-in 256-color
-" dithering is tuned for the standard xterm color cube and Vim's fallback
-" approximation isn't. See s:chafa_color_arg() for the actual detection;
-" g:bex_image_chafa_args remains the override point for anything else
-" (symbols, work factor, etc.) -- set an explicit '--colors=...' in here
-" yourself to bypass the auto-detection entirely.
-let g:bex_image_chafa_args  = get(g:, 'bex_image_chafa_args', [])
-
-" ImageMagick's sixel output only actually renders on terminals with real
-" sixel support, which Vim's builtin :terminal (backed by libvterm) does
-" not have -- it's kept as a best-effort fallback for when chafa isn't
-" installed at all, since sixel is the only static-image format it can
-" produce on its own. (In practice, if you only have this fallback
-" available, expect the preview to render as raw sixel escape data
-" rather than an image, since libvterm can't interpret it -- installing
-" chafa is the real fix in that case.)
-"
-" The default args below pin the colorspace to sRGB and use Floyd-
-" Steinberg error-diffusion dithering. Without '-colorspace sRGB',
-" ImageMagick performs the color-reduction math for '-colors'/sixel
-" quantization in linear-light RGB, which comes out washed out and
-" shifted toward yellow-green once rendered. Without an explicit
-" '-dither', IM's default ordered/halftone dither leaves a visible
-" cross-hatch speckle pattern over the whole image instead of the
-" smoother, more photographic look error diffusion gives at typical
-" terminal cell resolutions. Both are quantization-time settings, so
-" they only affect the magick/convert fallback -- chafa does its own
-" quantization and isn't affected by g:bex_image_magick_args at all.
-let g:bex_image_magick_args = get(g:, 'bex_image_magick_args',
-    \ ['-geometry', '1024x768>', '-colorspace', 'sRGB',
-    \  '-dither', 'FloydSteinberg', '-colors', '256'])
-
-" True if any supported image-preview backend is installed. Cheap
-" existence check kept separate from s:image_backend() so callers that
-" just need to know "is preview possible at all" don't have to supply a
-" path/size first.
 function! s:image_backend_available() abort
     return executable('chafa') || executable('magick') || executable('convert')
 endfunction
 
-" Returns the '--colors=...' flag to hand chafa, based on 'termguicolors'
-" rather than 't_Co' -- t_Co is Vim's terminfo-derived color count for its
-" own syntax highlighting and says nothing about how a :terminal buffer's
-" escape codes get displayed (see the long comment above
-" g:bex_image_chafa_args for why that distinction matters here). Returns
-" [] instead of a flag if the user already supplied their own '--colors'
-" in g:bex_image_chafa_args, so an explicit override always wins over
-" this auto-detection.
-function! s:chafa_color_arg() abort
-    for l:arg in g:bex_image_chafa_args
-        if l:arg =~# '^--colors='
-            return []
-        endif
-    endfor
-    return (exists('&termguicolors') && &termguicolors) ? ['--colors=full'] : ['--colors=256']
-endfunction
-
-" Character-cell bounding box to render the image into: the current
-" window's size, minus one row reserved for the header popup. This is
-" only ever fed to chafa's own '--size' argument below -- never to
-" term_start()'s term_rows/term_cols -- so it has no effect on the actual
-" Vim window or its statusline, unlike an earlier attempt at the same
-" idea.
+" Character-cell size to render into: the window's size minus one row for
+" the header popup. Only ever fed to chafa's own '--size' below, never to
+" term_start()'s term_rows/term_cols, so it never resizes the real window.
 function! s:image_target_size() abort
     let l:winid = win_getid()
-    return {
-        \ 'cols':  max([winwidth(l:winid), 1]),
-        \ 'lines': max([winheight(l:winid) - 1, 1]),
-        \ }
+    return [max([winwidth(l:winid), 1]), max([winheight(l:winid) - 1, 1])]
 endfunction
 
-" Builds the argv for rendering a:path at roughly a:cols x a:lines
-" character cells (see s:image_target_size()). Called fresh every time
-" the image is (re)drawn, including on window resize, so it always
-" matches the window's current size instead of a stale one.
+" chafa is preferred; ImageMagick's sixel output is a best-effort fallback,
+" since Vim's builtin :terminal (libvterm) can't actually render sixel --
+" installing chafa is the real fix if only this fallback is ever used.
 function! s:image_backend(path, cols, lines) abort
-    let l:cols  = max([a:cols, 1])
-    let l:lines = max([a:lines, 1])
-
     if executable('chafa')
-        return ['chafa', '--size', l:cols . 'x' . l:lines] + s:chafa_color_arg() + g:bex_image_chafa_args + [a:path]
+        let l:has_colors = !empty(filter(copy(g:bex_image_chafa_args), 'v:val =~# "^--colors="))
+        let l:colors = l:has_colors ? []
+            \ : [(exists('&termguicolors') && &termguicolors) ? '--colors=full' : '--colors=256']
+        return ['chafa', '--size', a:cols . 'x' . a:lines] + l:colors + g:bex_image_chafa_args + [a:path]
     elseif executable('magick') || executable('convert')
-        " '-geometry WxH>' already preserves aspect ratio on its own
-        " (the trailing '>' only ever shrinks, never stretches), so no
-        " explicit cell size is needed here.
-        let l:bin = executable('magick') ? 'magick' : 'convert'
-        return [l:bin, a:path] + g:bex_image_magick_args + ['sixel:-']
+        return [executable('magick') ? 'magick' : 'convert', a:path] + g:bex_image_magick_args + ['sixel:-']
     endif
     return []
 endfunction
 
 " (Re)draws a:path into the current window as a fresh terminal job,
-" replacing whatever terminal buffer (if any) was previously showing it.
-" Used both for the initial preview and to redraw on window resize --
-" term_start() always creates a brand-new buffer even with 'curwin', so
-" the old one (if this is a redraw of the same image, not a first-time
-" open) is wiped after the new one takes its place, and its now-stale
-" header popup is closed along with it via BufUnload.
+" replacing whatever bex terminal buffer was previously showing it.
 function! s:start_image_terminal(path) abort
     let l:old_buf = (get(b:, 'bex_image_src', '') ==# a:path) ? bufnr('%') : -1
 
-    let l:size = s:image_target_size()
-    let l:cmd = s:image_backend(a:path, l:size.cols, l:size.lines)
+    let [l:cols, l:lines] = s:image_target_size()
+    let l:cmd = s:image_backend(a:path, l:cols, l:lines)
     if empty(l:cmd)
         execute 'edit ' . fnameescape(a:path)
         return
     endif
 
-    " Deliberately NOT passing term_rows/term_cols to term_start(): those
-    " don't just set the pty's reported size, they tell Vim to size the
-    " *window* to match (padding/cropping otherwise), which was resizing
-    " the actual window -- and with it every other window's statusline --
-    " on each redraw. The terminal just fills the real window as-is; the
-    " sizing chafa needs comes from the '--size' argument built above
-    " instead, which has no effect on Vim's own layout.
-    call term_start(l:cmd, {
-        \ 'curwin': 1,
-        \ 'term_name': '[image] ' . fnamemodify(a:path, ':t'),
-        \ })
+    " No term_rows/term_cols: those resize the *window* (and every other
+    " window's statusline) to match. Sizing comes from '--size' above.
+    call term_start(l:cmd, {'curwin': 1, 'term_name': '[image] ' . fnamemodify(a:path, ':t')})
     let b:bex_image_src = a:path
 
-    " Close the outgoing buffer's popup directly here rather than relying
-    " on its own BufWinLeave/BufUnload autocmd (see bex_image_header
-    " augroup below) to do it via the bwipeout! just below. That autocmd
-    " path works fine for a first-time preview or the '-' key return, but
-    " NOT for a resize-triggered redraw specifically: this whole function
-    " is itself running as a VimResized autocmd handler (via
-    " s:redraw_image()), and Vim does not fire nested autocommands by
-    " default -- the BufUnload that bwipeout! would normally trigger gets
-    " silently suppressed because we're already inside VimResized's own
-    " autocmd processing. Left to that path alone, every resize leaks the
-    " previous popup: it's an independent floating window with no tie to
-    " the buffer's lifecycle beyond that autocmd, so once the trigger is
-    " swallowed it just sits at its old screen position forever, drawn
-    " over whatever buffer or window you switch to afterward. Closing it
-    " imperatively here sidesteps the nested-autocmd question entirely.
+    " Closed imperatively rather than relying on the old buffer's own
+    " BufUnload: this can run nested inside a VimResized handler, where
+    " Vim suppresses nested autocmds and that cleanup path never fires.
     if l:old_buf > 0 && bufexists(l:old_buf)
         let l:old_popup = getbufvar(l:old_buf, 'bex_image_popup', -1)
         if l:old_popup > 0 && exists('*popup_close')
             call popup_close(l:old_popup)
             call setbufvar(l:old_buf, 'bex_image_popup', -1)
         endif
+        if l:old_buf != bufnr('%')
+            execute 'bwipeout! ' . l:old_buf
+        endif
     endif
 
-    if l:old_buf > 0 && l:old_buf != bufnr('%') && bufexists(l:old_buf)
-        execute 'bwipeout! ' . l:old_buf
-    endif
-
-    " nonumber/norelativenumber/signcolumn=no: without these, a global
-    " 'number' or 'relativenumber' (or a gutter from another plugin)
-    " shows up as a column of digits/marks laid directly over the
-    " rendered image, since this is an ordinary Vim window like any
-    " other -- term_start() doesn't clear those options on its own.
     setlocal nomodified nobuflisted nonumber norelativenumber
     setlocal signcolumn=no nowrap nolist
 
@@ -541,25 +406,14 @@ function! s:start_image_terminal(path) abort
     call s:show_image_header(a:path)
 endfunction
 
-" Re-renders the currently displayed image at the window's new size.
-" Bound to VimResized on the terminal buffer itself (see
-" s:start_image_terminal()) -- the earlier one-shot chafa/magick job has
-" already exited by the time a resize happens, so its output is just
-" static text as far as Vim is concerned and won't reflow on its own;
-" this reruns the backend from scratch against the new dimensions.
+" Reruns the backend at the window's new size; the one-shot render job has
+" already exited by the time a resize happens, so it won't reflow on its own.
 function! s:redraw_image() abort
-    if !exists('b:bex_image_src') || empty(b:bex_image_src) | return | endif
-    if &buftype !=# 'terminal' | return | endif
+    if !exists('b:bex_image_src') || &buftype !=# 'terminal' | return | endif
     call s:start_image_terminal(b:bex_image_src)
 endfunction
 
-" Bound to '-' in the image-preview buffer: switches back to browsing in
-" bex (reusing the current window) and cleans up the now-unneeded
-" terminal buffer behind it. bex#Toggle() finds whatever bex buffer is
-" already sitting hidden -- bex#OnSelect() closes the bex *window* when
-" opening a file, never the buffer -- and switches straight to it, so
-" this lands back exactly where browsing left off, cursor position and
-" all.
+" Bound to '-': switch back to browsing and clean up the terminal buffer.
 function! bex#ReturnFromImage() abort
     if &buftype !=# 'terminal' || !exists('b:bex_image_src')
         return
@@ -571,14 +425,6 @@ function! bex#ReturnFromImage() abort
     endif
 endfunction
 
-" Replaces the plain `execute 'edit ' . fnameescape(path)` bex#OnSelect()
-" used to call directly. When the target is a previewable image and a
-" backend is installed, render it into the current window via
-" :terminal instead of loading it as a text buffer, and keep it sized to
-" the window as it's resized; anything else (not an image, no backend
-" found, or Vim built without +terminal) falls straight through to the
-" normal :edit, so behavior is unchanged unless preview is actually
-" possible.
 function! s:open_file_or_image(path) abort
     if g:bex_image_preview && s:is_image(a:path) && exists('*term_start') && s:image_backend_available()
         call s:start_image_terminal(a:path)
@@ -612,28 +458,19 @@ function! bex#OnSelect() abort
             wincmd p
 
             " Close the leftover bex-window split BEFORE opening the
-            " target, not after: s:open_file_or_image() -> term_start()
-            " for an image preview captures the window's size as it
-            " exists the instant the job launches, and chafa renders
-            " into that once, immediately. If the bex window (still
-            " occupying half the split) hasn't been closed yet, the
-            " terminal launches at that transient half-size and there's
-            " no later event that re-triggers it -- closing a window is
-            " an internal layout change, not the outer-terminal resize
-            " that VimResized (and s:redraw_image()) actually watches
-            " for. Closing first means the remaining window is already
-            " at its true final size before anything renders into it.
+            " target: an image preview captures the window's size the
+            " instant the job launches, and closing a window is an
+            " internal layout change that VimResized doesn't fire for --
+            " so the split must already be gone before anything renders.
             let l:bex_win = bufwinnr(l:bex_buf)
             if l:bex_win != -1
                 execute l:bex_win . 'close'
             endif
             call s:open_file_or_image(l:path)
 
-            " Do this last, and by buffer number rather than s:close_header_popup()'s
-            " b: lookup: the vsplit above briefly opens a second window onto the
-            " bex buffer, whose WinEnter recreates the popup even if we'd already
-            " closed it — and by now the current buffer is the opened file, not
-            " bex, so a plain current-buffer close can't see it anymore either.
+            " By buffer number, not b:: the vsplit above briefly reopens
+            " the bex buffer (recreating the popup via WinEnter), and by
+            " now the current buffer is the opened file, not bex.
             let l:popup = getbufvar(l:bex_buf, 'bex_header_popup', -1)
             if l:popup > 0 && exists('*popup_close')
                 call popup_close(l:popup)
@@ -644,12 +481,9 @@ function! bex#OnSelect() abort
         return
     endif
 
-    " No tracked ID on this line: if it's a freshly typed directory entry
-    " (e.g. "src/") that doesn't exist on disk yet, enter it as a virtual
-    " directory so files and folders can be staged inside it before
-    " anything is written to disk. Lines that still carry a stale/foreign
-    " ID (matched above but not in b:bex_snapshot) are intentionally left
-    " untouched, same as before.
+    " No tracked ID: if it's a freshly typed directory entry that doesn't
+    " exist on disk yet, enter it as a virtual directory. Lines with a
+    " stale/foreign ID are left untouched.
     let l:name = trim(l:line)
     if empty(l:name) || l:name !~# '/$' || l:name =~# '^\/[0-9a-zA-Z]\+'
         return
@@ -666,17 +500,9 @@ endfunction
 
 function! bex#UpdateVirtualDirectory(path) abort
     if g:bex_toggling | return | endif
-    " While viewing changes the buffer holds rendered summary text, not a
-    " listing — nothing to derive pending state from, and g:bex_cache
-    " already has the real state anyway.
     if get(b:, 'bex_changes_view', 0) | return | endif
     if mode() =~# '^[vV]' || mode() ==# "\<C-v>" | return | endif
 
-    " Merge in anything previously staged on a currently-hidden item (see
-    " s:merge_hidden_pending()) before deciding whether there are pending
-    " changes -- otherwise a directory whose only pending change lives on
-    " a dotfile that's currently hidden would look empty here and get its
-    " entire cache entry wiped out below.
     let l:state = s:merge_hidden_pending(a:path, s:QueryBuffer())
     let l:has_changes = !empty(l:state.delete) || !empty(l:state.rename)
         \ || !empty(l:state.entries) || !empty(l:state.move_to)
@@ -698,22 +524,14 @@ function! bex#RevertChangeUnderCursor() abort
     call s:revert_change_under_cursor()
 endfunction
 
-" Toggle between the normal editable listing and a read-only summary of
-" everything staged in g:bex_cache, rendered directly into the same
-" buffer. Mapped to <Tab> — see the top-level comment near the mapping for
-" why that key specifically.
+" Toggle between the editable listing and a read-only summary of
+" everything staged in g:bex_cache, rendered into the same buffer.
 function! bex#ToggleChangesView() abort
     if get(b:, 'bex_changes_view', 0)
         let b:bex_changes_view = 0
         setlocal modifiable
         call s:render()
 
-        " s:render() rebuilds the listing from scratch, so the line the
-        " cursor happens to be on (a leftover changes-view line number)
-        " has nothing to do with the item it was on before <Tab> was
-        " pressed. Find that same item again by ID, same as
-        " bex#ToggleHidden() does, rather than leaving the cursor
-        " wherever render() defaults to.
         if exists('b:bex_pre_changes_cursor')
             let l:saved = b:bex_pre_changes_cursor
             unlet b:bex_pre_changes_cursor
@@ -806,16 +624,12 @@ function! s:QueryBuffer() abort
     return l:state
 endfunction
 
-" Carries forward any previously staged 'delete'/'rename' entries whose id
-" isn't present in the buffer's current snapshot -- i.e. a change staged on
-" a dotfile while it was shown, which then got hidden again by toggling
-" '.' off. QueryBuffer() only ever derives state from what's currently
-" rendered, so callers that use its result to overwrite g:bex_cache would
-" otherwise silently lose that pending change the moment dotfiles are
-" hidden (whether that's mid-toggle or from any later edit made while
-" hidden). 'entries' and 'move_to' don't need this: restore_cached_buffer()
-" always re-inserts those into the buffer regardless of the hidden-files
-" setting, so QueryBuffer() already recaptures them correctly on its own.
+" Carries forward previously staged delete/rename entries whose id isn't
+" in the current buffer snapshot -- e.g. a change staged on a dotfile
+" that then got hidden by toggling '.' off. Without this, callers that
+" overwrite g:bex_cache with QueryBuffer()'s result would silently lose
+" that pending change. entries/move_to don't need this: restore_cached_buffer()
+" always re-inserts those regardless of the hidden-files setting.
 function! s:merge_hidden_pending(dir, state) abort
     if !has_key(g:bex_cache, a:dir) | return a:state | endif
     let l:old = g:bex_cache[a:dir]
@@ -831,10 +645,6 @@ function! s:merge_hidden_pending(dir, state) abort
             if l:seen | continue | endif
 
             call add(a:state[l:key], l:item)
-            " Carry the snapshot info along too -- apply_all()/validate_all()
-            " read entry details (path, is_dir) from the cached state's own
-            " 'snapshot' field, not from the live b:bex_snapshot, so without
-            " this the preserved entry would have nothing to act on.
             if has_key(l:old.snapshot, l:item.id) && !has_key(a:state.snapshot, l:item.id)
                 let a:state.snapshot[l:item.id] = l:old.snapshot[l:item.id]
             endif
@@ -846,12 +656,8 @@ endfunction
 
 " File System Application
 
-" If a directory is itself staged for deletion, deletions recorded for its
-" descendants are redundant — deleting the directory already removes them
-" recursively. Prune those descendant delete entries (and drop the cached
-" state for that directory entirely if nothing else is pending there) so
-" the changes view and the delete pass only ever deal with the top-most
-" deleted directory.
+" If a directory is itself staged for deletion, descendant deletes are
+" redundant -- deleting the directory already removes them recursively.
 function! s:prune_redundant_deletes() abort
     let l:deleted_dirs = []
     for [l:dir, l:state] in items(g:bex_cache)
@@ -884,11 +690,8 @@ function! s:prune_redundant_deletes() abort
     endfor
 endfunction
 
-" A virtual (not-yet-on-disk) directory is only meaningful as long as it is
-" still reachable via an unbroken chain of pending creations, starting from
-" a real directory. If the entry that would have created it (or one of its
-" virtual ancestors) gets deleted from the buffer, it's no longer going to
-" be created and shouldn't be treated as staged.
+" A virtual (not-yet-on-disk) directory only stays "staged" as long as
+" it's still reachable via an unbroken chain of pending creations.
 function! s:virtual_dir_will_be_created(path) abort
     let l:parent = fnamemodify(a:path, ':h')
     if l:parent ==# a:path | return 0 | endif
@@ -910,8 +713,6 @@ function! s:virtual_dir_will_be_created(path) abort
     return 0
 endfunction
 
-" Drop cached state for any virtual directory (and, transitively, anything
-" staged underneath it) whose creation is no longer pending anywhere.
 function! s:prune_orphaned_virtual_dirs() abort
     let l:to_remove = []
     for l:vdir in keys(g:bex_cache)
@@ -1031,11 +832,6 @@ endfunction
 
 function! s:on_write() abort
     if get(b:, 'bex_changes_view', 0)
-        " g:bex_cache already fully reflects what's pending — the buffer
-        " right now is rendered summary text, not a listing to re-derive
-        " state from, so just restore a modifiable listing (which
-        " apply_all()'s closing render() needs) and skip straight to
-        " applying.
         let b:bex_changes_view = 0
         setlocal modifiable
         call s:render()
@@ -1107,9 +903,8 @@ function! s:on_write() abort
     call s:apply_all()
 endfunction
 
-" Move a path using the OS's own move/rename command rather than Vim's
-" rename() builtin. Sets v:shell_error as its normal side effect from
-" system(), matching how copies are checked elsewhere in this file.
+" Renames go through the OS move command (matching how copies are done
+" elsewhere) rather than Vim's rename() builtin. Sets v:shell_error.
 function! s:native_move(src, dst) abort
     let l:cmd = (has('win32') || has('win64')) ? 'move /Y ' : 'mv '
     call system(l:cmd . shellescape(a:src) . ' ' . shellescape(a:dst))
@@ -1128,10 +923,8 @@ function! s:apply_all() abort
         for l:ren in l:state.rename
             if !has_key(l:state.snapshot, l:ren.id) | continue | endif
             let l:old_p = l:state.snapshot[l:ren.id].path
-            " Stage through a collision-safe temp name in the same
-            " directory (keeps the move on the same filesystem) so
-            " chained/swapped renames (A->B, B->A) never clash with each
-            " other mid-flight.
+            " Stage through a collision-safe temp name first, so chained
+            " or swapped renames (A->B, B->A) never clash mid-flight.
             let l:tmp_p = fnamemodify(l:old_p, ':h') . '/.bex-tmp-'
                 \ . fnamemodify(tempname(), ':t') . '-' . fnamemodify(l:old_p, ':t')
             call s:native_move(l:old_p, l:tmp_p)
@@ -1153,12 +946,6 @@ function! s:apply_all() abort
     for [l:dir, l:state] in items(g:bex_cache)
         let l:sep = (l:dir ==# '/' || l:dir ==# '\') ? '' : '/'
 
-        " The target directory itself may not exist yet (a virtual
-        " directory staged via bex#OnSelect / bex#Navigate, possibly
-        " several levels deep). mkdir(..., 'p') creates the whole chain
-        " of missing ancestors in one shot and is a no-op if the
-        " directory already exists, so this is safe regardless of the
-        " iteration order of g:bex_cache.
         if !isdirectory(l:dir) && !filereadable(l:dir)
             call mkdir(l:dir, 'p')
         endif
@@ -1289,10 +1076,6 @@ function! s:apply_all() abort
 
     call s:render()
 
-    " Find whatever the cursor was on before the write, under its
-    " (possibly new, since the ID counter reset above) ID, and put the
-    " cursor back on it rather than leaving it wherever render() defaults
-    " to (the top of the listing).
     let l:target_id = ''
     if !empty(l:cursor_path)
         for [l:id, l:item] in items(b:bex_snapshot)
@@ -1356,10 +1139,8 @@ endfunction
 
 " Rendering
 
-" IDs are printed as '/' + 4 base62 characters (a-z, A-Z, 0-9 = 62 symbols,
-" 62^4 ≈ 14.7 million distinct values per session) instead of the previous
-" 8-digit hex, so they read shorter on screen while still being effectively
-" collision-free for a single Vim session's g:bex_id_counter.
+" IDs are '/' + 4 base62 characters (62^4 ~= 14.7M values per session) so
+" they read shorter on screen than the previous 8-digit hex.
 let s:bex_id_alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 let s:bex_id_base = len(s:bex_id_alphabet)
 let s:bex_id_len = 4
@@ -1400,8 +1181,22 @@ function! s:render() abort
         if g:bex_path_ids[l:p] == g:bex_id_counter | let g:bex_id_counter += 1 | endif
 
         let l:id = '/' . s:encode_id(g:bex_path_ids[l:p])
-        let l:lines += [l:id . ' ' . l:name . (isdirectory(l:p) ? '/' : '')]
-        let b:bex_snapshot[l:id] = {'name': l:name, 'is_dir': isdirectory(l:p), 'path': l:p}
+        let l:is_dir  = isdirectory(l:p)
+        " executable() checks this exact file (l:p always has a path
+        " separator, so it never falls back to a $PATH search).
+        let l:is_exec = !l:is_dir && executable(l:p)
+        let l:is_link = getftype(l:p) ==# 'link'
+        let l:link_target = l:is_link ? resolve(l:p) : ''
+
+        " Only '/' is baked into real buffer text -- it's load-bearing
+        " (BexDir syntax match, virtual-directory check, dir renaming).
+        " The exec/symlink markers are purely informational virtual text
+        " instead (see s:reapply_props()), since making them real text
+        " broke QueryBuffer()'s rename detection.
+        let l:suffix  = l:is_dir ? '/' : ''
+        let l:lines += [l:id . ' ' . l:name . l:suffix]
+        let b:bex_snapshot[l:id] = {'name': l:name, 'is_dir': l:is_dir, 'is_exec': l:is_exec,
+            \ 'is_link': l:is_link, 'link_target': l:link_target, 'path': l:p}
     endfor
 
     let g:bex_snapshots[b:bex_dir] = copy(b:bex_snapshot)
@@ -1409,13 +1204,9 @@ function! s:render() abort
     silent %delete _
     if g:bex_header_at_bottom
         call setline(1, l:lines + [''])
-        " Always leave at least one real line above the spacer so the
-        " cursor has somewhere valid to land, even for an empty directory.
         if line('$') == 1 | call append(0, '') | endif
     else
         call setline(1, [''] + l:lines)
-        " Always leave at least one real line under the spacer so the
-        " cursor has somewhere valid to land, even for an empty directory.
         if line('$') == 1 | call append(1, '') | endif
     endif
     setlocal nomodified
@@ -1461,42 +1252,31 @@ function! s:restore_cached_buffer() abort
     endfor
 
     if g:bex_header_at_bottom
-        " Strip leading empty lines (nothing reserved up here in this mode).
         while line('$') > 2 && empty(trim(getline(1)))
             silent execute '1d _'
         endwhile
-        " Strip empty lines sitting between real content and the reserved
-        " trailing spacer, keeping the spacer (the last line) itself.
         while line('$') > 2 && empty(trim(getline(line('$') - 1)))
             silent execute (line('$') - 1) . 'd _'
         endwhile
-        " Always keep exactly one trailing blank spacer line, and at least
-        " one real editable line above it.
         if line('$') < 2 || !empty(trim(getline(line('$'))))
             call append(line('$'), '')
         endif
     else
-        " Strip leading empty lines (right after the reserved spacer),
-        " keeping the spacer itself untouched.
         while line('$') > 2 && empty(trim(getline(2)))
             silent execute '2d _'
         endwhile
-        " Strip all trailing empty lines
         while line('$') > 2 && empty(trim(getline(line('$'))))
             silent execute line('$') . 'd _'
         endwhile
-        " Always leave at least one editable line beneath the spacer.
         if line('$') == 1 | call append(1, '') | endif
     endif
 
     setlocal nomodified
 endfunction
 
-" First and one-past-last real content line. In top mode line 1 is the
-" reserved spacer, so content runs [2, line('$')]. In bottom mode the very
-" last line is the reserved spacer instead, so content runs
-" [1, line('$')-1]. Both bounds are re-evaluated fresh on every call since
-" line('$') changes as lines are added/removed.
+" First and one-past-last real content line. Top mode: line 1 is the
+" reserved spacer, content is [2, line('$')]. Bottom mode: the last line
+" is the spacer, content is [1, line('$')-1]. Re-evaluated on every call.
 function! s:content_start() abort
     return g:bex_header_at_bottom ? 1 : 2
 endfunction
@@ -1505,8 +1285,6 @@ function! s:content_end() abort
     return g:bex_header_at_bottom ? line('$') - 1 : line('$')
 endfunction
 
-" Append a line of real content, keeping it on the correct side of the
-" reserved spacer regardless of header position.
 function! s:append_content(text) abort
     if g:bex_header_at_bottom
         call append(line('$') - 1, a:text)
@@ -1515,12 +1293,10 @@ function! s:append_content(text) abort
     endif
 endfunction
 
-" The header lives in a popup anchored to the window's screen position (not
-" a buffer line and not a winbar), so it can never become stray buffer
-" text and can never be edited or deleted. One end of the buffer is kept
-" as a permanent blank spacer — line 1 in top mode, the last line in
-" bottom mode — so the popup always has empty space to sit over instead of
-" covering a real entry.
+" The header lives in a popup anchored to the window's screen position, so
+" it can never become stray buffer text. One end of the buffer (line 1 in
+" top mode, the last line in bottom mode) is kept as a permanent blank
+" spacer for it to sit over.
 function! s:enforce_spacer() abort
     if !exists('b:bex_dir') | return | endif
     if get(b:, 'bex_changes_view', 0) | return | endif
@@ -1548,46 +1324,17 @@ function! s:close_header_popup() abort
     let b:bex_header_popup = -1
 endfunction
 
-" Records that a:popup_id belongs to a:bufnr -- the only bookkeeping this
-" does. Closing happens centrally in s:bex_gc_popups() below rather than
-" here, because per-buffer close-on-unload autocmds have repeatedly
-" proven unreliable for these popups across different code paths (a
-" resize-triggered redraw suppressing a nested BufUnload, a reload
-" swapping buffers out from under a hidden terminal buffer, etc.) --
-" rather than continuing to special-case each new path that can leave a
-" popup's own close event un-fired, every bex-owned popup is tracked here
-" and swept by a buffer-independent garbage collector on a regular
-" cadence instead, so a leak from *any* cause is bounded to at most one
-" GC pass rather than requiring its own dedicated fix.
 function! s:bex_register_popup(popup_id, bufnr) abort
     let g:bex_popup_registry[a:popup_id] = a:bufnr
 endfunction
 
-" Closes any registered popup whose id no longer matches the CURRENT
-" b:bex_header_popup / b:bex_image_popup of the buffer it was created
-" for (superseded by a newer popup on that buffer, e.g. a redraw or
-" reopen that never got to clean up the old one -- see
-" s:bex_register_popup() above) or whose buffer no longer exists at all.
-"
-" For everything else -- a popup that's still legitimately the live one
-" for its buffer -- this also repositions it to match that buffer's
-" CURRENT window. That's needed because a popup's own buffer-local
-" autocmds (WinScrolled/WinEnter/VimResized in bex_events, or the
-" equivalent set in bex_image_header) only fire in response to something
-" happening TO that specific window: opening a brand new split moves and
-" resizes every OTHER window on screen, including a bex window sitting
-" untouched in the background, without ever generating a WinEnter,
-" WinScrolled, or VimResized for that window itself -- focus goes to the
-" new window instead. Left alone, the popup just stays frozen at its old
-" screen coordinates, drawn over whatever's now sitting in that window's
-" original position. Global WinEnter (which DOES fire reliably for the
-" newly created window itself) is what triggers this function -- so
-" reaching over here to reposition every OTHER window's bex popups too,
-" not just close orphans, is what actually catches that case.
-"
-" Deliberately buffer-independent (bound to '*' below, not <buffer>) and
-" bound to broad, frequent events so neither cleanup nor repositioning is
-" tied to any one specific navigation path.
+" Closes any registered popup that's been superseded (its buffer's current
+" b:bex_header_popup/b:bex_image_popup no longer matches, or the buffer is
+" gone) and repositions everything else. Buffer-local resize/scroll
+" autocmds only fire for the window they're on -- a bex window sitting
+" untouched in the background while a new split is opened elsewhere never
+" gets one -- so this runs on broad, buffer-independent events instead and
+" catches every popup, not just the active window's.
 function! s:bex_gc_popups() abort
     if !exists('*popup_close') || !exists('*popup_getpos') | return | endif
     let l:orig_win = win_getid()
@@ -1627,23 +1374,10 @@ if exists('##WinClosed')
     augroup END
 endif
 
-" Closes every b:bex_header_popup / b:bex_image_popup across ALL buffers,
-" not just the current one. Needed specifically for the reload path:
-" bex#Reload() only knows about buffers with filetype ==# 'bex', but an
-" open image preview lives in a plain terminal buffer with its own
-" b:bex_image_popup that bex#Reload() has no reason to know about. That
-" popup's normal cleanup relies on BufUnload/BufWinLeave firing on the
-" terminal buffer itself (see s:start_image_terminal()'s bex_image_header
-" augroup) -- but bex#Reload() wipes the *bex* buffer and re-opens a fresh
-" one directly in the current window, which may leave the terminal
-" buffer's own unload/cleanup racing with or entirely skipped by that
-" swap (depending on 'hidden'). The result: an orphaned popup stuck at
-" its old screen position, showing the image's path, drawn on top of (or
-" beside) whatever header the freshly reloaded bex buffer creates next --
-" exactly the "status bar never changes" symptom after resizing an image
-" and reloading with ':Bex -r'. Sweeping every buffer's popup vars here,
-" unconditionally, sidesteps that race entirely rather than trying to fix
-" the ordering.
+" Closes every b:bex_header_popup/b:bex_image_popup across ALL buffers.
+" Needed by bex#Reload(): it only knows about 'bex' filetype buffers, but
+" an open image preview lives in a plain terminal buffer whose own cleanup
+" can race with (or be skipped by) the buffer swap Reload() does.
 function! s:close_all_bex_popups() abort
     if !exists('*popup_close') | return | endif
     for l:buf in range(1, bufnr('$'))
@@ -1658,16 +1392,11 @@ function! s:close_all_bex_popups() abort
     endfor
 endfunction
 
-" Mirrors bex's own header popup for an opened image preview, showing the
-" image's full path (home-shortened, same convention as
-" s:position_header_popup()) rather than just its containing directory's
-" last path component. bex#OnSelect() always closes the bex window once
-" the image is showing, so this can't simply reuse b:bex_header_popup /
-" the bex <buffer> autogroup -- both are scoped to a buffer that's about
-" to disappear. It runs its own small, equivalent autogroup on the
-" terminal buffer instead: reposition on resize/scroll, redraw the image
-" itself on resize, and close when that buffer goes away (all wired up in
-" s:start_image_terminal()).
+" Mirrors the bex header popup for an open image preview. Runs its own
+" small autogroup on the terminal buffer (wired up in
+" s:start_image_terminal()) since bex#OnSelect() always closes the bex
+" window once the image is showing, so b:bex_header_popup/bex_events no
+" longer apply.
 function! s:show_image_header(path) abort
     if !exists('*popup_create') | return | endif
 
@@ -1721,11 +1450,9 @@ function! s:close_image_header() abort
     let b:bex_image_popup = -1
 endfunction
 
-" Keep the cursor from ever resting on the reserved spacer line, in any
-" mode. In Visual/Visual-block mode this only moves the active end of the
-" selection (cursor()); the anchor end ('v mark) is untouched, so it just
-" clamps how far a selection can extend rather than cancelling it. No-op
-" while viewing changes — there's no spacer concept in that view.
+" Keeps the cursor off the reserved spacer line in any mode. In
+" Visual/Visual-block mode this only moves the active end of the
+" selection, so it clamps rather than cancels a selection.
 function! s:lock_cursor() abort
     if get(b:, 'bex_changes_view', 0) | return | endif
     if g:bex_header_at_bottom
@@ -1740,14 +1467,8 @@ function! s:lock_cursor() abort
 endfunction
 
 function! s:ensure_header_highlights() abort
-    " Sane defaults so the on/off state is visibly distinct even without a
-    " colorscheme that defines these groups; 'default' means a user's own
-    " definition always wins. These must be defined BEFORE prop_type_add
-    " below — prop_type_add throws E970 if the highlight group it
-    " references doesn't exist yet, which previously fired on every single
-    " CursorMoved (since position_header_popup() runs on every cursor
-    " move), throwing an error and eating the user's next keypress as that
-    " error prompt's dismissal instead of processing it.
+    " Must exist before prop_type_add below (which throws E970 otherwise) --
+    " this used to fire on every CursorMoved and eat the user's next keypress.
     highlight default BexDotfilesOn  ctermfg=Green guifg=#98c379
     highlight default BexDotfilesOff ctermfg=Red   guifg=#e06c75
 
@@ -1759,10 +1480,8 @@ function! s:ensure_header_highlights() abort
     endif
 endfunction
 
-" Compact, single-line summary of the current directory's pending changes
-" only (not the whole g:bex_cache — that's what <Tab> is for), e.g.
-" "-old.txt ~renamed.txt +new.txt". Truncated by the caller to fit the
-" window, since this is destined for the header popup.
+" Compact single-line summary of the current directory's pending changes,
+" e.g. "-old.txt ~renamed.txt +new.txt". Truncated by the caller to fit.
 function! s:change_summary_text() abort
     if !has_key(g:bex_cache, b:bex_dir) | return '' | endif
     let l:state = g:bex_cache[b:bex_dir]
@@ -1800,9 +1519,6 @@ function! s:position_header_popup() abort
     let l:right    = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
     let l:right_hl = g:bex_show_hidden ? 'BexDotfilesOn' : 'BexDotfilesOff'
 
-    " Squeeze in a compact change summary between the path and the
-    " dotfiles state, truncating it (never the path) with '...' if there
-    " isn't room for the whole thing.
     let l:summary = s:change_summary_text()
     if !empty(l:summary)
         let l:avail = winwidth(l:winid) - strdisplaywidth(l:left) - strdisplaywidth(l:right) - 6
@@ -1818,8 +1534,6 @@ function! s:position_header_popup() abort
     let l:pad   = max([l:width - strdisplaywidth(l:left_full) - strdisplaywidth(l:right), 1])
     let l:text  = l:left_full . repeat(' ', l:pad) . l:right
 
-    " 1-based byte column where the dotfiles segment starts, so only that
-    " part of the line is colored — the rest stays the plain header color.
     let l:right_col = len(l:left_full) + l:pad + 1
     let l:content = [{
         \ 'text': l:text,
@@ -1851,54 +1565,48 @@ function! s:position_header_popup() abort
 endfunction
 
 function! s:reapply_props() abort
-    " The changes view manages its own props/highlighting (see
-    " s:show_changes_in_buffer()) — clearing/rebuilding the file-listing
-    " ones here would just wipe that out for nothing, since none of the
-    " listing patterns match changes-view text anyway.
     if get(b:, 'bex_changes_view', 0) | return | endif
 
     if empty(prop_type_get('bex_info')) | call prop_type_add('bex_info', {'highlight': 'BexInfo'}) | endif
+    if empty(prop_type_get('bex_exec_marker')) | call prop_type_add('bex_exec_marker', {'highlight': 'BexExec'}) | endif
+    if empty(prop_type_get('bex_symlink_marker')) | call prop_type_add('bex_symlink_marker', {'highlight': 'BexSymlink'}) | endif
 
     call prop_clear(1, line('$'))
 
     for l:lnum in range(s:content_start(), s:content_end())
         let l:id = matchstr(getline(l:lnum), '^\/[0-9a-zA-Z]\{4}')
         if empty(l:id) || !has_key(b:bex_snapshot, l:id) | continue | endif
-        let l:p = b:bex_snapshot[l:id].path
-        let l:size = b:bex_snapshot[l:id].is_dir ? '' : s:human_size(getfsize(l:p))
+        let l:item = b:bex_snapshot[l:id]
+        let l:p = l:item.path
+        let l:size = l:item.is_dir ? '' : s:human_size(getfsize(l:p))
         let l:info = printf('%-10s %8s %10s', getfperm(l:p), l:size, s:relative_time(getftime(l:p)))
         call prop_add(l:lnum, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
+
+        " Purely informational virtual text, same reasoning as the '/'
+        " comment in s:render() -- never part of the real buffer line.
+        let l:col = len(getline(l:lnum)) + 1
+        if l:item.is_exec
+            call prop_add(l:lnum, l:col, {'type': 'bex_exec_marker', 'text': '*'})
+        endif
+        if get(l:item, 'is_link', 0)
+            call prop_add(l:lnum, l:col, {'type': 'bex_symlink_marker', 'text': '@ -> ' . l:item.link_target})
+        endif
     endfor
 
     syntax clear
-    syntax match BexID       /^\/[0-9a-zA-Z]\+\ze\s/
-    syntax match BexHiddenID /^\/[0-9a-zA-Z]\+\ze\s\+\.[^/]/
     syntax match BexDir        /\%(\/[0-9a-zA-Z]\+\s\+\|\s*\)\zs[^/].\+\/$/
     syntax match BexDir        /\zs\S\+\/$/
     syntax match BexHiddenDir  /\zs\.[^/]*\/$/
     syntax match BexHiddenFile /\%(^\s*\|\s\)\zs\.[^/]\+$/
-    " Ordinary (non-hidden) files: same '\zs field-start' convention as
-    " BexHiddenFile above -- matches right after either leading
-    " whitespace at start of line (for a freshly typed, not-yet-tracked
-    " entry with no ID prefix) or the single space after an ID -- but
-    " requires the name NOT start with '.' (that's BexHiddenFile's job)
-    " and contain no '/' at all. Excluding '/' from the character class
-    " entirely also excludes directories for free: a directory line ends
-    " in '/', so the run stops just short of it and '$' then fails to
-    " match with that trailing '/' still unconsumed, same as it does for
-    " BexDir's own '$'-anchored end. Without this, plain files had no
-    " syntax match of their own and silently rendered in Normal instead
-    " of the BexFile group defined in plugin/bex.vim.
     syntax match BexFile       /\%(^\s*\|\s\)\zs[^.\/[:space:]][^\/]*$/
 endfunction
 
-" Changes View — toggled in-place with <Tab> instead of a separate split.
-" Builds a read-only (nomodifiable) rendering of everything staged across
-" g:bex_cache directly into the current buffer; <Tab> again (or writing)
-" returns to the normal editable listing.
+" Changes View -- toggled in-place with <Tab>. Builds a read-only
+" rendering of everything staged across g:bex_cache directly into the
+" current buffer; <Tab> again (or writing) returns to the editable listing.
 
-" Builds the {lines, highlights} for every directory with pending changes
-" in g:bex_cache — the full picture, not just the current directory (that
+" {lines, highlights} for every directory with pending changes in
+" g:bex_cache -- the full picture, not just the current directory (that
 " scoping is for the header-popup summary instead).
 function! s:build_changes_content() abort
     let l:global_deletions = {}
@@ -1960,8 +1668,6 @@ function! s:build_changes_content() abort
         let l:lnum += 1
     endfor
 
-    " Drop the single trailing blank separator so the view doesn't end on
-    " an empty line.
     if !empty(l:lines) && empty(l:lines[-1])
         call remove(l:lines, -1)
     endif
@@ -1974,11 +1680,8 @@ function! s:show_changes_in_buffer() abort
     let l:lines = empty(l:content.lines) ? ['(no pending changes)'] : l:content.lines
     let l:highlights = copy(l:content.highlights)
 
-    " Reserve a blank line for the header popup to sit over — same
-    " convention as the listing view — so it doesn't cover the first row
-    " of real content (the changes view has no editable spacer/cursor-lock
-    " machinery since it's read-only, but the popup still needs somewhere
-    " blank to render).
+    " Reserve a blank line for the header popup, same convention as the
+    " listing view.
     if g:bex_header_at_bottom
         let l:lines = l:lines + ['']
     else
@@ -1986,10 +1689,7 @@ function! s:show_changes_in_buffer() abort
         let l:highlights = map(l:highlights, {_, v -> extend(v, {'lnum': v.lnum + 1})})
     endif
 
-    " Sane defaults, same reasoning as s:ensure_header_highlights(): these
-    " must exist before prop_type_add references them below, or it throws
-    " E970. 'default' still yields to any colorscheme that defines these
-    " groups itself.
+    " Must exist before prop_type_add below (E970 otherwise).
     highlight default BexChangesDir      cterm=bold    gui=bold
     highlight default BexChangesDel      ctermfg=Red   guifg=#e06c75
     highlight default BexChangesMoveFrom ctermfg=Red   guifg=#e06c75 cterm=italic gui=italic
@@ -2018,11 +1718,8 @@ function! s:show_changes_in_buffer() abort
     call s:position_header_popup()
 endfunction
 
-" Reverts whatever change is under the cursor while in the changes view
-" (mapped through <CR> via bex#OnSelect()'s dispatch at the top).
-" Locate which directory a changes-view line belongs to, by scanning
-" upward from that line for the nearest unindented header line (item
-" lines are always indented as '   [+~*-] ...').
+" Which directory a changes-view line belongs to, by scanning upward for
+" the nearest unindented header line (item lines are always indented).
 function! s:changes_view_owner_dir(lnum) abort
     let l:owner_dir = ''
     let l:home = expand('$HOME')
@@ -2046,8 +1743,6 @@ function! s:revert_change_under_cursor() abort
     let l:id = matchstr(l:line, '\/[0-9a-zA-Z]\+')
 
     if empty(l:id)
-        " A plain new-entry line (no ID) — find it by name within the
-        " directory header it's nested under.
         let l:entry_name = matchstr(l:line, '^\s*[+~*-]\s\+(new)\s\+\zs.*')
         if empty(l:entry_name) | return | endif
 
@@ -2061,15 +1756,9 @@ function! s:revert_change_under_cursor() abort
             call remove(g:bex_cache, l:owner_dir)
         endif
     else
-        " Scope this to the single directory the cursor line belongs to,
-        " and remove only the one entry the cursor is actually on.
-        " Matching by id alone isn't enough for move_to: pasting the same
-        " source into one directory several times under different names
-        " produces multiple move_to entries that all share that source's
-        " id, and the same id can also appear as a move_to target in
-        " other directories entirely. Filtering by id globally (the old
-        " behavior) wiped out every one of those instead of just this
-        " line's entry.
+        " Scoped to this line's directory and this exact entry: matching
+        " by id alone would wipe every move_to sharing that source id
+        " (e.g. the same file pasted into several directories).
         let l:owner_dir = s:changes_view_owner_dir(l:save_lnum)
         if empty(l:owner_dir) || !has_key(g:bex_cache, l:owner_dir) | return | endif
         let l:state = g:bex_cache[l:owner_dir]
@@ -2081,10 +1770,6 @@ function! s:revert_change_under_cursor() abort
         elseif l:sym ==# '~'
             let l:state.rename = filter(copy(l:state.rename), {_, v -> v.id !=# l:id})
         else
-            " '+' (move, source already deleted) or '*' (copy) -- both
-            " live in move_to; disambiguate duplicate ids by name too,
-            " and drop only the first match so a genuine duplicate line
-            " loses just the one under the cursor.
             let l:name = matchstr(l:line, '^\s*[+*]\s\+\/[0-9a-zA-Z]\+\s\+\zs.*')
             let l:removed = 0
             let l:kept = []
@@ -2108,7 +1793,6 @@ function! s:revert_change_under_cursor() abort
     call s:normalize_cache()
 
     if empty(g:bex_cache)
-        " Nothing left to review — drop back to the listing automatically.
         let b:bex_changes_view = 0
         setlocal modifiable
         call s:render()
