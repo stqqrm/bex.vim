@@ -108,6 +108,7 @@ Plug 'stqqrm/bex.vim'
 
 ## Color Tokens
 [Color Tokens](#color-tokens)
+```
 0   black
 1   red
 2   green
@@ -124,6 +125,7 @@ Plug 'stqqrm/bex.vim'
 13  br_magenta
 14  br_cyan
 15  br_white
+```
 
 ## Todo
 
