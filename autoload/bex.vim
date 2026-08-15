@@ -64,6 +64,8 @@ function! bex#Open(path) abort
     let b:bex_dir = l:dir
     let b:bex_header_popup = -1
     let b:bex_changes_view = 0
+    let b:bex_history = [l:dir]
+    let b:bex_hist_idx = 0
 
     " Opt bex out of coc.nvim's document-sync/diagnostics machinery: its
     " CursorHold-triggered housekeeping was silently resetting the cursor
@@ -77,6 +79,8 @@ function! bex#Open(path) abort
     nnoremap <buffer> <silent> <Tab> :call bex#ToggleChangesView()<CR>
     nnoremap <buffer> <silent> e :call bex#ExtractUnderCursor()<CR>
     nnoremap <buffer> <silent> gd :call bex#GotoDefinition()<CR>
+    nnoremap <buffer> <silent> <C-o> :call bex#HistoryBack()<CR>
+    nnoremap <buffer> <silent> <C-i> :call bex#HistoryForward()<CR>
 
     call s:render()
 
@@ -139,12 +143,27 @@ function! bex#Navigate(path, ...) abort
     " a:1 = allow_virtual (1 to navigate into a directory that doesn't
     " exist on disk yet, e.g. a freshly typed entry about to be created).
     let l:allow_virtual = get(a:, 1, 0)
+    let l:skip_history = get(a:, 2, 0)
 
     let l:dir = fnamemodify(a:path, ':p')
     let l:dir = len(l:dir) > 1 ? substitute(l:dir, '[/\\]$', '', '') : l:dir
     if !isdirectory(l:dir) && !l:allow_virtual
         echoerr 'bex: Directory not found: ' . l:dir
         return
+    endif
+
+    if !l:skip_history
+        if !exists('b:bex_history')
+            let b:bex_history = []
+            let b:bex_hist_idx = -1
+        endif
+        if empty(b:bex_history) || b:bex_history[b:bex_hist_idx] !=# l:dir
+            if b:bex_hist_idx < len(b:bex_history) - 1
+                let b:bex_history = b:bex_history[0 : b:bex_hist_idx]
+            endif
+            call add(b:bex_history, l:dir)
+            let b:bex_hist_idx = len(b:bex_history) - 1
+        endif
     endif
 
     " Leave the changes view first and actually re-render (not just flip
@@ -167,6 +186,26 @@ function! bex#Navigate(path, ...) abort
     if has_key(g:bex_cursor_pos, l:dir)
         call setpos('.', g:bex_cursor_pos[l:dir])
     endif
+endfunction
+
+function! bex#HistoryBack() abort
+    if !exists('b:bex_history') || b:bex_hist_idx <= 0
+        echo 'bex: no earlier location'
+        return
+    endif
+    let b:bex_hist_idx -= 1
+    let l:target = b:bex_history[b:bex_hist_idx]
+    call bex#Navigate(l:target, !isdirectory(l:target), 1)
+endfunction
+
+function! bex#HistoryForward() abort
+    if !exists('b:bex_history') || b:bex_hist_idx >= len(b:bex_history) - 1
+        echo 'bex: no later location'
+        return
+    endif
+    let b:bex_hist_idx += 1
+    let l:target = b:bex_history[b:bex_hist_idx]
+    call bex#Navigate(l:target, !isdirectory(l:target), 1)
 endfunction
 
 function! bex#ToggleHidden() abort
@@ -350,7 +389,7 @@ endfunction
 " installing chafa is the real fix if only this fallback is ever used.
 function! s:image_backend(path, cols, lines) abort
     if executable('chafa')
-        let l:has_colors = !empty(filter(copy(g:bex_image_chafa_args), 'v:val =~# "^--colors="))
+        let l:has_colors = !empty(filter(copy(g:bex_image_chafa_args), 'v:val =~# "^--colors="'))
         let l:colors = l:has_colors ? []
             \ : [(exists('&termguicolors') && &termguicolors) ? '--colors=full' : '--colors=256']
         return ['chafa', '--size', a:cols . 'x' . a:lines] + l:colors + g:bex_image_chafa_args + [a:path]
@@ -1599,6 +1638,8 @@ function! s:reapply_props() abort
     syntax match BexHiddenDir  /\zs\.[^/]*\/$/
     syntax match BexHiddenFile /\%(^\s*\|\s\)\zs\.[^/]\+$/
     syntax match BexFile       /\%(^\s*\|\s\)\zs[^.\/[:space:]][^\/]*$/
+    syntax match BexID         /^\/[0-9a-zA-Z]\+\ze\s\+[^.[:space:]]/
+    syntax match BexHiddenID   /^\/[0-9a-zA-Z]\+\ze\s\+\./
 endfunction
 
 " Changes View -- toggled in-place with <Tab>. Builds a read-only
