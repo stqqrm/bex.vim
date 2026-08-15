@@ -62,7 +62,7 @@ RETURN
     Navigate to previous directory.
 
 TAB
-    Toggle between viewing changes and current directory.
+    Toggle between viewing file system modifications and current directory.
 
 .
     Toggle visibility of dotfiles.
