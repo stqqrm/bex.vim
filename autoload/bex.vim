@@ -11,6 +11,10 @@ let g:bex_toggling          = get(g:, 'bex_toggling', 0)
 let g:bex_cursor_pos        = get(g:, 'bex_cursor_pos', {})
 let g:bex_header_at_bottom  = get(g:, 'bex_header_at_bottom', 0)
 
+" Central registry of every bex-owned popup id -> the buffer it was
+" created for. See s:bex_gc_popups() below for what this is for.
+let g:bex_popup_registry     = get(g:, 'bex_popup_registry', {})
+
 " Image preview support. Entering (<CR>) a file whose extension is in this
 " list renders it in-place with chafa or ImageMagick instead of opening it
 " as a text buffer -- see s:image_backend(). Set g:bex_image_preview = 0 to
@@ -116,6 +120,12 @@ endfunction
 
 function! bex#Reload(...) abort
     let l:path = get(a:, 1, '')
+
+    " Sweep any leftover image/header popups first -- see
+    " s:close_all_bex_popups() for why this can't just rely on the
+    " terminal buffer's own BufUnload/BufWinLeave cleanup here.
+    call s:close_all_bex_popups()
+
     " Reset all global state
     let g:bex_cache      = {}
     let g:bex_snapshots  = {}
@@ -353,20 +363,23 @@ endfunction
 " chafa's own heuristics, the same ones fastfetch relies on, do better
 " left alone.
 "
-" Color depth is the one exception, forced to full truecolor below
-" rather than left to auto-detection. chafa normally auto-detects color
-" depth from terminal-capability signals like $COLORTERM, but the image
-" preview here runs *inside* a Vim :terminal job (see
-" s:start_image_terminal() -> term_start()) -- i.e. chafa's own stdout
-" is being relayed through libvterm before it ever reaches the real
-" terminal emulator, and $COLORTERM doesn't reliably survive that
-" relay. When chafa can't confirm truecolor support this way it falls
-" back to a quantized ~256-color palette and dithers to approximate the
-" image, which shows up as a speckled cross-hatch texture with visibly
-" shifted colors -- not a real fidelity problem with the image, just
-" chafa being conservative about a color depth libvterm can actually
-" display just fine. Forcing it removes the guesswork.
-let g:bex_image_chafa_args  = get(g:, 'bex_image_chafa_args', ['--colors=full'])
+" Color depth is handled separately from the rest of g:bex_image_chafa_args
+" (see s:chafa_color_arg() below) rather than being folded into this list's
+" static default. It can't be a fixed default because the right value
+" depends on 'termguicolors' at call time, not on anything knowable in
+" advance: Vim's :terminal buffer (see s:start_image_terminal() ->
+" term_start()) passes 24-bit color through as-is when 'termguicolors' is
+" on, but re-quantizes it down to a 256-color approximation when it's off
+" -- and that's a *second*, cruder quantization pass stacked on top of
+" whatever chafa itself already did. Asking chafa for truecolor and then
+" having Vim mangle it back down produces worse results than just having
+" chafa quantize straight to 256 itself, since chafa's built-in 256-color
+" dithering is tuned for the standard xterm color cube and Vim's fallback
+" approximation isn't. See s:chafa_color_arg() for the actual detection;
+" g:bex_image_chafa_args remains the override point for anything else
+" (symbols, work factor, etc.) -- set an explicit '--colors=...' in here
+" yourself to bypass the auto-detection entirely.
+let g:bex_image_chafa_args  = get(g:, 'bex_image_chafa_args', [])
 
 " ImageMagick's sixel output only actually renders on terminals with real
 " sixel support, which Vim's builtin :terminal (backed by libvterm) does
@@ -400,6 +413,23 @@ function! s:image_backend_available() abort
     return executable('chafa') || executable('magick') || executable('convert')
 endfunction
 
+" Returns the '--colors=...' flag to hand chafa, based on 'termguicolors'
+" rather than 't_Co' -- t_Co is Vim's terminfo-derived color count for its
+" own syntax highlighting and says nothing about how a :terminal buffer's
+" escape codes get displayed (see the long comment above
+" g:bex_image_chafa_args for why that distinction matters here). Returns
+" [] instead of a flag if the user already supplied their own '--colors'
+" in g:bex_image_chafa_args, so an explicit override always wins over
+" this auto-detection.
+function! s:chafa_color_arg() abort
+    for l:arg in g:bex_image_chafa_args
+        if l:arg =~# '^--colors='
+            return []
+        endif
+    endfor
+    return (exists('&termguicolors') && &termguicolors) ? ['--colors=full'] : ['--colors=256']
+endfunction
+
 " Character-cell bounding box to render the image into: the current
 " window's size, minus one row reserved for the header popup. This is
 " only ever fed to chafa's own '--size' argument below -- never to
@@ -423,7 +453,7 @@ function! s:image_backend(path, cols, lines) abort
     let l:lines = max([a:lines, 1])
 
     if executable('chafa')
-        return ['chafa', '--size', l:cols . 'x' . l:lines] + g:bex_image_chafa_args + [a:path]
+        return ['chafa', '--size', l:cols . 'x' . l:lines] + s:chafa_color_arg() + g:bex_image_chafa_args + [a:path]
     elseif executable('magick') || executable('convert')
         " '-geometry WxH>' already preserves aspect ratio on its own
         " (the trailing '>' only ever shrinks, never stretches), so no
@@ -464,6 +494,29 @@ function! s:start_image_terminal(path) abort
         \ })
     let b:bex_image_src = a:path
 
+    " Close the outgoing buffer's popup directly here rather than relying
+    " on its own BufWinLeave/BufUnload autocmd (see bex_image_header
+    " augroup below) to do it via the bwipeout! just below. That autocmd
+    " path works fine for a first-time preview or the '-' key return, but
+    " NOT for a resize-triggered redraw specifically: this whole function
+    " is itself running as a VimResized autocmd handler (via
+    " s:redraw_image()), and Vim does not fire nested autocommands by
+    " default -- the BufUnload that bwipeout! would normally trigger gets
+    " silently suppressed because we're already inside VimResized's own
+    " autocmd processing. Left to that path alone, every resize leaks the
+    " previous popup: it's an independent floating window with no tie to
+    " the buffer's lifecycle beyond that autocmd, so once the trigger is
+    " swallowed it just sits at its old screen position forever, drawn
+    " over whatever buffer or window you switch to afterward. Closing it
+    " imperatively here sidesteps the nested-autocmd question entirely.
+    if l:old_buf > 0 && bufexists(l:old_buf)
+        let l:old_popup = getbufvar(l:old_buf, 'bex_image_popup', -1)
+        if l:old_popup > 0 && exists('*popup_close')
+            call popup_close(l:old_popup)
+            call setbufvar(l:old_buf, 'bex_image_popup', -1)
+        endif
+    endif
+
     if l:old_buf > 0 && l:old_buf != bufnr('%') && bufexists(l:old_buf)
         execute 'bwipeout! ' . l:old_buf
     endif
@@ -482,7 +535,7 @@ function! s:start_image_terminal(path) abort
         autocmd! * <buffer>
         autocmd VimResized,WinScrolled,WinEnter <buffer> call s:reposition_image_header()
         autocmd VimResized                      <buffer> call s:redraw_image()
-        autocmd BufWinLeave,BufUnload           <buffer> call s:close_image_header()
+        autocmd BufWinLeave,BufUnload    nested  <buffer> call s:close_image_header()
     augroup END
 
     call s:show_image_header(a:path)
@@ -1495,6 +1548,81 @@ function! s:close_header_popup() abort
     let b:bex_header_popup = -1
 endfunction
 
+" Records that a:popup_id belongs to a:bufnr -- the only bookkeeping this
+" does. Closing happens centrally in s:bex_gc_popups() below rather than
+" here, because per-buffer close-on-unload autocmds have repeatedly
+" proven unreliable for these popups across different code paths (a
+" resize-triggered redraw suppressing a nested BufUnload, a reload
+" swapping buffers out from under a hidden terminal buffer, etc.) --
+" rather than continuing to special-case each new path that can leave a
+" popup's own close event un-fired, every bex-owned popup is tracked here
+" and swept by a buffer-independent garbage collector on a regular
+" cadence instead, so a leak from *any* cause is bounded to at most one
+" GC pass rather than requiring its own dedicated fix.
+function! s:bex_register_popup(popup_id, bufnr) abort
+    let g:bex_popup_registry[a:popup_id] = a:bufnr
+endfunction
+
+" Closes any registered popup whose id no longer matches the CURRENT
+" b:bex_header_popup / b:bex_image_popup of the buffer it was created
+" for (superseded by a newer popup on that buffer, e.g. a redraw or
+" reopen that never got to clean up the old one -- see
+" s:bex_register_popup() above) or whose buffer no longer exists at all.
+" Deliberately buffer-independent (bound to '*' below, not <buffer>) and
+" bound to broad, frequent events so it isn't tied to any one
+" navigation path -- this is what actually stops a leaked popup from
+" surviving into unrelated buffers/windows regardless of what caused it.
+function! s:bex_gc_popups() abort
+    if !exists('*popup_close') || !exists('*popup_getpos') | return | endif
+    for [l:id_str, l:bufnr] in items(g:bex_popup_registry)
+        let l:id = str2nr(l:id_str)
+        let l:current_header = bufexists(l:bufnr) ? getbufvar(l:bufnr, 'bex_header_popup', -1) : -1
+        let l:current_image  = bufexists(l:bufnr) ? getbufvar(l:bufnr, 'bex_image_popup', -1)  : -1
+        if l:current_header != l:id && l:current_image != l:id
+            if !empty(popup_getpos(l:id))
+                call popup_close(l:id)
+            endif
+            call remove(g:bex_popup_registry, l:id_str)
+        endif
+    endfor
+endfunction
+
+augroup bex_popup_gc
+    autocmd!
+    autocmd VimResized,WinEnter,BufWinEnter,TabEnter,CursorHold,CursorHoldI * call s:bex_gc_popups()
+augroup END
+
+" Closes every b:bex_header_popup / b:bex_image_popup across ALL buffers,
+" not just the current one. Needed specifically for the reload path:
+" bex#Reload() only knows about buffers with filetype ==# 'bex', but an
+" open image preview lives in a plain terminal buffer with its own
+" b:bex_image_popup that bex#Reload() has no reason to know about. That
+" popup's normal cleanup relies on BufUnload/BufWinLeave firing on the
+" terminal buffer itself (see s:start_image_terminal()'s bex_image_header
+" augroup) -- but bex#Reload() wipes the *bex* buffer and re-opens a fresh
+" one directly in the current window, which may leave the terminal
+" buffer's own unload/cleanup racing with or entirely skipped by that
+" swap (depending on 'hidden'). The result: an orphaned popup stuck at
+" its old screen position, showing the image's path, drawn on top of (or
+" beside) whatever header the freshly reloaded bex buffer creates next --
+" exactly the "status bar never changes" symptom after resizing an image
+" and reloading with ':Bex -r'. Sweeping every buffer's popup vars here,
+" unconditionally, sidesteps that race entirely rather than trying to fix
+" the ordering.
+function! s:close_all_bex_popups() abort
+    if !exists('*popup_close') | return | endif
+    for l:buf in range(1, bufnr('$'))
+        if !bufexists(l:buf) | continue | endif
+        for l:var in ['bex_header_popup', 'bex_image_popup']
+            let l:popup = getbufvar(l:buf, l:var, -1)
+            if l:popup > 0
+                call popup_close(l:popup)
+                call setbufvar(l:buf, l:var, -1)
+            endif
+        endfor
+    endfor
+endfunction
+
 " Mirrors bex's own header popup for an opened image preview, showing the
 " image's full path (home-shortened, same convention as
 " s:position_header_popup()) rather than just its containing directory's
@@ -1532,6 +1660,7 @@ function! s:show_image_header(path) abort
         \ 'highlight': 'BexHeader',
         \ 'zindex': 50,
         \ })
+    call s:bex_register_popup(b:bex_image_popup, bufnr('%'))
 endfunction
 
 function! s:reposition_image_header() abort
@@ -1679,6 +1808,7 @@ function! s:position_header_popup() abort
 
     if !exists('b:bex_header_popup') || b:bex_header_popup <= 0 || empty(popup_getpos(b:bex_header_popup))
         let b:bex_header_popup = popup_create(l:content, l:opts)
+        call s:bex_register_popup(b:bex_header_popup, bufnr('%'))
     else
         call popup_settext(b:bex_header_popup, l:content)
         call popup_move(b:bex_header_popup, l:opts)
