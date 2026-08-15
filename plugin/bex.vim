@@ -48,6 +48,11 @@ let s:bex_tokens = {
       \ 'br_white':   15,
       \ }
 
+let s:bex_gui_colors = [
+      \ 'Black', 'Red', 'Green', 'Yellow', 'Blue', 'Magenta', 'Cyan', 'LightGray',
+      \ 'DarkGray', 'LightRed', 'LightGreen', 'LightYellow', 'LightBlue', 'LightMagenta', 'LightCyan', 'White'
+      \ ]
+
 " 8-color fallback: on terminals reporting &t_Co < 16 (e.g. raw Linux tty
 " with $TERM=linux), fold any bright token (8-15) down to its base 0-7
 " ANSI color and add 'bold' to preserve some visual distinction - the
@@ -56,12 +61,18 @@ function! s:bex_hi(group, fg_token) abort
     let l:cmd = 'highlight! ' . a:group
     let l:attrs = []
 
-    if a:fg_token != '' && has_key(s:bex_tokens, a:fg_token)
+    if a:fg_token !=# '' && has_key(s:bex_tokens, a:fg_token)
         let l:fg = s:bex_tokens[a:fg_token]
+
+        " GUI is the default color representation.
+        let l:cmd .= ' guifg=' . s:bex_gui_colors[l:fg]
+
+        " Terminal fallback.
         if &t_Co < 16 && l:fg >= 8 && l:fg <= 15
             let l:fg = l:fg - 8
             call add(l:attrs, 'bold')
         endif
+
         let l:cmd .= ' ctermfg=' . l:fg
     endif
 
