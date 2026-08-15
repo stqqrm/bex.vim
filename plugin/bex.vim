@@ -44,9 +44,28 @@ let s:bex_tokens = {
       \ 'br_white':   15,
       \ }
 
+let g:bex_gui_black      = get(g:, 'bex_gui_black',      'Black')
+let g:bex_gui_red        = get(g:, 'bex_gui_red',        'Red')
+let g:bex_gui_green      = get(g:, 'bex_gui_green',      'Green')
+let g:bex_gui_yellow     = get(g:, 'bex_gui_yellow',     'Yellow')
+let g:bex_gui_blue       = get(g:, 'bex_gui_blue',       'Blue')
+let g:bex_gui_magenta    = get(g:, 'bex_gui_magenta',    'Magenta')
+let g:bex_gui_cyan       = get(g:, 'bex_gui_cyan',       'Cyan')
+let g:bex_gui_white      = get(g:, 'bex_gui_white',      'LightGray')
+let g:bex_gui_br_black   = get(g:, 'bex_gui_br_black',   'DarkGray')
+let g:bex_gui_br_red     = get(g:, 'bex_gui_br_red',     'LightRed')
+let g:bex_gui_br_green   = get(g:, 'bex_gui_br_green',   'LightGreen')
+let g:bex_gui_br_yellow  = get(g:, 'bex_gui_br_yellow',  'LightYellow')
+let g:bex_gui_br_blue    = get(g:, 'bex_gui_br_blue',    'LightBlue')
+let g:bex_gui_br_magenta = get(g:, 'bex_gui_br_magenta', 'LightMagenta')
+let g:bex_gui_br_cyan    = get(g:, 'bex_gui_br_cyan',    'LightCyan')
+let g:bex_gui_br_white   = get(g:, 'bex_gui_br_white',   'White')
+
 let s:bex_gui_colors = [
-      \ 'Black', 'Red', 'Green', 'Yellow', 'Blue', 'Magenta', 'Cyan', 'LightGray',
-      \ 'DarkGray', 'LightRed', 'LightGreen', 'LightYellow', 'LightBlue', 'LightMagenta', 'LightCyan', 'White'
+      \ g:bex_gui_black, g:bex_gui_red, g:bex_gui_green, g:bex_gui_yellow,
+      \ g:bex_gui_blue, g:bex_gui_magenta, g:bex_gui_cyan, g:bex_gui_white,
+      \ g:bex_gui_br_black, g:bex_gui_br_red, g:bex_gui_br_green, g:bex_gui_br_yellow,
+      \ g:bex_gui_br_blue, g:bex_gui_br_magenta, g:bex_gui_br_cyan, g:bex_gui_br_white
       \ ]
 
 " 8-color fallback: on terminals reporting &t_Co < 16, fold any bright
@@ -86,9 +105,9 @@ function! bex#RedefineHighlights() abort
     call s:bex_hi('BexHiddenFile',      'white')
     call s:bex_hi('BexVisible',         'br_green')
     call s:bex_hi('BexHidden',          'br_red')
+    call s:bex_hi('BexID',              'br_black')
+    call s:bex_hi('BexHiddenID',        'br_black')
     call s:bex_hi('BexExec',            'br_green')
-    " Rendered on the '@ -> target' virtual text bex#appends to symlink
-    " entries -- see s:reapply_props() / s:render() in autoload/bex.vim.
     call s:bex_hi('BexSymlink',         'br_blue')
 
     call s:bex_hi('BexChangesDir',      'br_yellow')
