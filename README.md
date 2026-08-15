@@ -26,11 +26,11 @@ A simple ID-tracked file browser for Vim. The name **bex** stands for **Better E
 ```
 
 ## Configuration
-
+Moving Bex header to top/bottom can be set.
 ```vim
 let g:bex_header_at_bottom = 1
 ```
-You can also change theme if termguicolors is enabled.
+You can change theme if termguicolors is enabled.
 ```vim
 let g:bex_gui_black      = '#000000'
 let g:bex_gui_red        = '#AA0000'
