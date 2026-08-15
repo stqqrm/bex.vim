@@ -76,7 +76,25 @@ let g:bex_hi_BexChangesCopy     = 'br_blue'
 let g:bex_hi_BexDotfilesOn      = 'br_green'
 let g:bex_hi_BexDotfilesOff     = 'br_red'
 ```
-
+## Color Tokens
+```
+0   black
+1   red
+2   green
+3   yellow
+4   blue
+5   magenta
+6   cyan
+7   white
+8   br_black
+9   br_red
+10  br_green
+11  br_yellow
+12  br_blue
+13  br_magenta
+14  br_cyan
+15  br_white
+```
 
 ## Binds
 
@@ -104,26 +122,6 @@ g+d
 
 ```vim
 Plug 'stqqrm/bex.vim'
-```
-
-## Color Tokens
-```
-0   black
-1   red
-2   green
-3   yellow
-4   blue
-5   magenta
-6   cyan
-7   white
-8   br_black
-9   br_red
-10  br_green
-11  br_yellow
-12  br_blue
-13  br_magenta
-14  br_cyan
-15  br_white
 ```
 
 ## Todo
