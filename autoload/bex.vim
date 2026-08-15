@@ -1568,29 +1568,64 @@ endfunction
 " for (superseded by a newer popup on that buffer, e.g. a redraw or
 " reopen that never got to clean up the old one -- see
 " s:bex_register_popup() above) or whose buffer no longer exists at all.
+"
+" For everything else -- a popup that's still legitimately the live one
+" for its buffer -- this also repositions it to match that buffer's
+" CURRENT window. That's needed because a popup's own buffer-local
+" autocmds (WinScrolled/WinEnter/VimResized in bex_events, or the
+" equivalent set in bex_image_header) only fire in response to something
+" happening TO that specific window: opening a brand new split moves and
+" resizes every OTHER window on screen, including a bex window sitting
+" untouched in the background, without ever generating a WinEnter,
+" WinScrolled, or VimResized for that window itself -- focus goes to the
+" new window instead. Left alone, the popup just stays frozen at its old
+" screen coordinates, drawn over whatever's now sitting in that window's
+" original position. Global WinEnter (which DOES fire reliably for the
+" newly created window itself) is what triggers this function -- so
+" reaching over here to reposition every OTHER window's bex popups too,
+" not just close orphans, is what actually catches that case.
+"
 " Deliberately buffer-independent (bound to '*' below, not <buffer>) and
-" bound to broad, frequent events so it isn't tied to any one
-" navigation path -- this is what actually stops a leaked popup from
-" surviving into unrelated buffers/windows regardless of what caused it.
+" bound to broad, frequent events so neither cleanup nor repositioning is
+" tied to any one specific navigation path.
 function! s:bex_gc_popups() abort
     if !exists('*popup_close') || !exists('*popup_getpos') | return | endif
+    let l:orig_win = win_getid()
     for [l:id_str, l:bufnr] in items(g:bex_popup_registry)
         let l:id = str2nr(l:id_str)
         let l:current_header = bufexists(l:bufnr) ? getbufvar(l:bufnr, 'bex_header_popup', -1) : -1
         let l:current_image  = bufexists(l:bufnr) ? getbufvar(l:bufnr, 'bex_image_popup', -1)  : -1
+
         if l:current_header != l:id && l:current_image != l:id
             if !empty(popup_getpos(l:id))
                 call popup_close(l:id)
             endif
             call remove(g:bex_popup_registry, l:id_str)
+            continue
+        endif
+
+        let l:winnr = bufwinnr(l:bufnr)
+        if l:winnr != -1
+            execute l:winnr . 'wincmd w'
+            if l:current_header == l:id
+                call s:position_header_popup()
+            else
+                call s:reposition_image_header()
+            endif
         endif
     endfor
+    call win_gotoid(l:orig_win)
 endfunction
 
 augroup bex_popup_gc
     autocmd!
     autocmd VimResized,WinEnter,BufWinEnter,TabEnter,CursorHold,CursorHoldI * call s:bex_gc_popups()
 augroup END
+if exists('##WinClosed')
+    augroup bex_popup_gc
+        autocmd WinClosed * call s:bex_gc_popups()
+    augroup END
+endif
 
 " Closes every b:bex_header_popup / b:bex_image_popup across ALL buffers,
 " not just the current one. Needed specifically for the reload path:
@@ -1842,6 +1877,19 @@ function! s:reapply_props() abort
     syntax match BexDir        /\zs\S\+\/$/
     syntax match BexHiddenDir  /\zs\.[^/]*\/$/
     syntax match BexHiddenFile /\%(^\s*\|\s\)\zs\.[^/]\+$/
+    " Ordinary (non-hidden) files: same '\zs field-start' convention as
+    " BexHiddenFile above -- matches right after either leading
+    " whitespace at start of line (for a freshly typed, not-yet-tracked
+    " entry with no ID prefix) or the single space after an ID -- but
+    " requires the name NOT start with '.' (that's BexHiddenFile's job)
+    " and contain no '/' at all. Excluding '/' from the character class
+    " entirely also excludes directories for free: a directory line ends
+    " in '/', so the run stops just short of it and '$' then fails to
+    " match with that trailing '/' still unconsumed, same as it does for
+    " BexDir's own '$'-anchored end. Without this, plain files had no
+    " syntax match of their own and silently rendered in Normal instead
+    " of the BexFile group defined in plugin/bex.vim.
+    syntax match BexFile       /\%(^\s*\|\s\)\zs[^.\/[:space:]][^\/]*$/
 endfunction
 
 " Changes View — toggled in-place with <Tab> instead of a separate split.
