@@ -66,6 +66,9 @@ TAB
 
 .
     Toggle visibility of dotfiles.
+
+g+d
+    Goto definition with symlinks.
 ```
 
 ## Installation
