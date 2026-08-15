@@ -15,6 +15,20 @@ let g:bex_header_at_bottom  = get(g:, 'bex_header_at_bottom', 0)
 " See s:bex_gc_popups() for what this is for.
 let g:bex_popup_registry     = get(g:, 'bex_popup_registry', {})
 
+" Cross-buffer jump list. Unlike the old per-bex-buffer b:bex_history,
+" this is global and mixes two kinds of stops: 'dir' (a directory shown
+" in the bex buffer) and 'buf' (a real file or image-preview buffer
+" opened *from* bex). <C-o>/<C-i> walk this list, so the chain can look
+" like: bex-dir-a <-> bex-dir-b <-> some-file-buffer <-> bex-dir-c.
+" g:bex_jump_idx is the index of the entry we're currently "at".
+let g:bex_jumplist          = get(g:, 'bex_jumplist', [])
+let g:bex_jump_idx          = get(g:, 'bex_jump_idx', -1)
+
+" Guards against s:jump_push() re-recording a stop while
+" s:goto_jump_entry() is itself driving navigation to that same stop
+" (which would otherwise truncate/mutate the very list we're walking).
+let s:bex_jump_navigating = 0
+
 " Image preview: entering (<CR>) a file whose extension is in this list
 " renders it in-place with chafa/ImageMagick instead of :edit. Set
 " g:bex_image_preview = 0 to disable and always fall back to :edit.
@@ -64,8 +78,8 @@ function! bex#Open(path) abort
     let b:bex_dir = l:dir
     let b:bex_header_popup = -1
     let b:bex_changes_view = 0
-    let b:bex_history = [l:dir]
-    let b:bex_hist_idx = 0
+
+    call s:jump_push({'type': 'dir', 'path': l:dir})
 
     " Opt bex out of coc.nvim's document-sync/diagnostics machinery: its
     " CursorHold-triggered housekeeping was silently resetting the cursor
@@ -79,8 +93,7 @@ function! bex#Open(path) abort
     nnoremap <buffer> <silent> <Tab> :call bex#ToggleChangesView()<CR>
     nnoremap <buffer> <silent> e :call bex#ExtractUnderCursor()<CR>
     nnoremap <buffer> <silent> gd :call bex#GotoDefinition()<CR>
-    nnoremap <buffer> <silent> <C-o> :call bex#HistoryBack()<CR>
-    nnoremap <buffer> <silent> <C-i> :call bex#HistoryForward()<CR>
+    call s:setup_jump_maps()
 
     call s:render()
 
@@ -143,7 +156,6 @@ function! bex#Navigate(path, ...) abort
     " a:1 = allow_virtual (1 to navigate into a directory that doesn't
     " exist on disk yet, e.g. a freshly typed entry about to be created).
     let l:allow_virtual = get(a:, 1, 0)
-    let l:skip_history = get(a:, 2, 0)
 
     let l:dir = fnamemodify(a:path, ':p')
     let l:dir = len(l:dir) > 1 ? substitute(l:dir, '[/\\]$', '', '') : l:dir
@@ -152,19 +164,7 @@ function! bex#Navigate(path, ...) abort
         return
     endif
 
-    if !l:skip_history
-        if !exists('b:bex_history')
-            let b:bex_history = []
-            let b:bex_hist_idx = -1
-        endif
-        if empty(b:bex_history) || b:bex_history[b:bex_hist_idx] !=# l:dir
-            if b:bex_hist_idx < len(b:bex_history) - 1
-                let b:bex_history = b:bex_history[0 : b:bex_hist_idx]
-            endif
-            call add(b:bex_history, l:dir)
-            let b:bex_hist_idx = len(b:bex_history) - 1
-        endif
-    endif
+    call s:jump_push({'type': 'dir', 'path': l:dir})
 
     " Leave the changes view first and actually re-render (not just flip
     " the flag) -- the next line queries buffer text for pending edits,
@@ -188,24 +188,12 @@ function! bex#Navigate(path, ...) abort
     endif
 endfunction
 
-function! bex#HistoryBack() abort
-    if !exists('b:bex_history') || b:bex_hist_idx <= 0
-        echo 'bex: no earlier location'
-        return
-    endif
-    let b:bex_hist_idx -= 1
-    let l:target = b:bex_history[b:bex_hist_idx]
-    call bex#Navigate(l:target, !isdirectory(l:target), 1)
+function! bex#JumpBack() abort
+    call s:jump_move(-1)
 endfunction
 
-function! bex#HistoryForward() abort
-    if !exists('b:bex_history') || b:bex_hist_idx >= len(b:bex_history) - 1
-        echo 'bex: no later location'
-        return
-    endif
-    let b:bex_hist_idx += 1
-    let l:target = b:bex_history[b:bex_hist_idx]
-    call bex#Navigate(l:target, !isdirectory(l:target), 1)
+function! bex#JumpForward() abort
+    call s:jump_move(1)
 endfunction
 
 function! bex#ToggleHidden() abort
@@ -434,6 +422,7 @@ function! s:start_image_terminal(path) abort
     setlocal signcolumn=no nowrap nolist
 
     nnoremap <buffer> <silent> - :call bex#ReturnFromImage()<CR>
+    call s:setup_jump_maps()
 
     augroup bex_image_header
         autocmd! * <buffer>
@@ -467,9 +456,16 @@ endfunction
 function! s:open_file_or_image(path) abort
     if g:bex_image_preview && s:is_image(a:path) && exists('*term_start') && s:image_backend_available()
         call s:start_image_terminal(a:path)
-        return
+    else
+        execute 'edit ' . fnameescape(a:path)
+        call s:setup_jump_maps()
     endif
-    execute 'edit ' . fnameescape(a:path)
+    " Record the buffer we just landed in as a stop in the shared
+    " jump list, so <C-o>/<C-i> can hop back to it even after further
+    " bex directory navigation elsewhere. Suppressed while a jump
+    " traversal is itself driving this open (see s:goto_buf_entry()).
+    call s:jump_push({'type': 'buf', 'bufnr': bufnr('%'), 'path': a:path,
+        \ 'is_image': s:is_image(a:path)})
 endfunction
 
 function! bex#OnSelect() abort
@@ -1840,6 +1836,144 @@ function! s:revert_change_under_cursor() abort
     else
         call s:show_changes_in_buffer()
         call cursor(min([l:save_lnum, line('$')]), 1)
+    endif
+endfunction
+
+" Cross-Buffer Jump List
+"
+" A single global list mixing 'dir' stops (a directory shown in the bex
+" buffer) and 'buf' stops (a real file/image-preview buffer opened from
+" bex). <C-o>/<C-i> in the bex buffer *and* in any buffer opened from it
+" walk this same list, so a chain like
+"   bex-dir-a -> bex-dir-b -> some-file -> bex-dir-c
+" is fully traversable in either direction, and browsing to a new stop
+" after jumping back truncates the old "future" the same way Vim's own
+" jumplist does.
+
+function! s:setup_jump_maps() abort
+    nnoremap <buffer> <silent> <C-o> :call bex#JumpBack()<CR>
+    nnoremap <buffer> <silent> <C-i> :call bex#JumpForward()<CR>
+endfunction
+
+" Records a:entry as the new "current" stop. No-op while a jump traversal
+" (s:goto_jump_entry) is itself driving navigation into that stop, and
+" collapses into the existing top-of-list entry instead of duplicating it
+" when nothing has actually moved (e.g. re-navigating to the same dir).
+function! s:jump_push(entry) abort
+    if s:bex_jump_navigating | return | endif
+
+    if g:bex_jump_idx >= 0 && g:bex_jump_idx < len(g:bex_jumplist) - 1
+        let g:bex_jumplist = g:bex_jumplist[0 : g:bex_jump_idx]
+    endif
+
+    if !empty(g:bex_jumplist)
+        let l:last = g:bex_jumplist[-1]
+        if l:last.type ==# a:entry.type
+            \ && ((a:entry.type ==# 'dir' && l:last.path ==# a:entry.path)
+            \  || (a:entry.type ==# 'buf' && get(l:last, 'bufnr', -1) == get(a:entry, 'bufnr', -2)))
+            let g:bex_jump_idx = len(g:bex_jumplist) - 1
+            return
+        endif
+    endif
+
+    call add(g:bex_jumplist, a:entry)
+    " Cap growth over a long session; oldest stops are the least useful.
+    if len(g:bex_jumplist) > 100
+        let g:bex_jumplist = g:bex_jumplist[-100:]
+    endif
+    let g:bex_jump_idx = len(g:bex_jumplist) - 1
+endfunction
+
+function! s:jump_move(step) abort
+    let l:new_idx = g:bex_jump_idx + a:step
+    if l:new_idx < 0 || l:new_idx >= len(g:bex_jumplist)
+        " Off the end of the bex-specific chain -- defer to Vim's own
+        " jumplist. Fed via feedkeys() rather than ":normal! <C-i>":
+        " <C-i> and <Tab> are the same byte, and :normal's argument
+        " parser treats a lone Tab as blank/"no argument", throwing
+        " E471. feedkeys() doesn't have that parsing quirk. The 'n'
+        " flag maps the keys non-remappably, so this can't loop back
+        " into our own <C-o>/<C-i> mappings.
+        call feedkeys(a:step < 0 ? "\<C-o>" : "\<C-i>", 'n')
+        return
+    endif
+    let g:bex_jump_idx = l:new_idx
+    call s:goto_jump_entry(g:bex_jump_idx)
+endfunction
+
+function! s:goto_jump_entry(idx) abort
+    let l:entry = g:bex_jumplist[a:idx]
+    let s:bex_jump_navigating = 1
+    try
+        if l:entry.type ==# 'dir'
+            call s:goto_dir_entry(l:entry)
+        else
+            call s:goto_buf_entry(l:entry)
+        endif
+    finally
+        let s:bex_jump_navigating = 0
+    endtry
+endfunction
+
+function! s:goto_dir_entry(entry) abort
+    let l:bex_buf = -1
+    for l:buf in range(1, bufnr('$'))
+        if bufexists(l:buf) && getbufvar(l:buf, '&filetype') ==# 'bex'
+            let l:bex_buf = l:buf
+            break
+        endif
+    endfor
+
+    " No bex buffer left (e.g. the user :bwipeout'd it) -- recreate one
+    " at the target directory. bex#Open() itself calls s:jump_push(),
+    " but that's a no-op while s:bex_jump_navigating is set.
+    if l:bex_buf == -1
+        call bex#Open(a:entry.path)
+        return
+    endif
+
+    let l:win = bufwinnr(l:bex_buf)
+    if l:win == -1
+        " Splitting is only to protect unsaved changes in the current
+        " window (same rule bex#Open() itself uses) -- otherwise just
+        " swap this window's buffer directly, no split.
+        execute (&modified ? 'sbuffer ' : 'buffer ') . l:bex_buf
+    else
+        execute l:win . 'wincmd w'
+    endif
+
+    if getbufvar(l:bex_buf, 'bex_dir', '') !=# a:entry.path
+        call bex#Navigate(a:entry.path, !isdirectory(a:entry.path))
+    endif
+endfunction
+
+function! s:goto_buf_entry(entry) abort
+    if bufexists(a:entry.bufnr)
+        let l:win = bufwinnr(a:entry.bufnr)
+        if l:win != -1
+            execute l:win . 'wincmd w'
+        else
+            execute (&modified ? 'sbuffer ' : 'buffer ') . a:entry.bufnr
+        endif
+        return
+    endif
+
+    " Buffer's gone (e.g. the image preview or file was closed) --
+    " best-effort recreate it from the saved path.
+    if empty(get(a:entry, 'path', '')) | return | endif
+
+    if &filetype ==# 'bex'
+        if winnr('$') == 1
+            leftabove vsplit
+        endif
+        wincmd p
+    endif
+
+    if get(a:entry, 'is_image', 0) && exists('*term_start') && s:image_backend_available()
+        call s:start_image_terminal(a:entry.path)
+    else
+        execute 'edit ' . fnameescape(a:entry.path)
+        call s:setup_jump_maps()
     endif
 endfunction
 
