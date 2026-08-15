@@ -1,4 +1,3 @@
-" plugin/bex.vim
 augroup bex_plugin
     autocmd!
     autocmd ColorScheme * call s:rerender_if_bex()
@@ -23,12 +22,9 @@ function! s:rerender_if_bex()
     endtry
 endfunction
 
-" Raw numeric ANSI tokens (0-15), same convention as my-theme.vim: named
-" cterm colors (Yellow, Black, ...) are NOT stable across color-mode and
-" get routed through a fixed xterm-256 table once &t_Co reaches 256, so
-" we bypass that by targeting literal ANSI indices directly. Base colors
-" are the standard 0-7 slots; 'br_' prefixed tokens are their bright
-" 8-15 counterparts (e.g. red=1 / br_red=9).
+" Raw numeric ANSI tokens (0-15): named cterm colors aren't stable across
+" color-mode once &t_Co reaches 256, so target literal ANSI indices
+" directly instead. 'br_' prefixed tokens are the bright 8-15 counterparts.
 let s:bex_tokens = {
       \ 'black':      0,
       \ 'red':        1,
@@ -53,10 +49,9 @@ let s:bex_gui_colors = [
       \ 'DarkGray', 'LightRed', 'LightGreen', 'LightYellow', 'LightBlue', 'LightMagenta', 'LightCyan', 'White'
       \ ]
 
-" 8-color fallback: on terminals reporting &t_Co < 16 (e.g. raw Linux tty
-" with $TERM=linux), fold any bright token (8-15) down to its base 0-7
-" ANSI color and add 'bold' to preserve some visual distinction - the
-" same rule s:hi() applies in my-theme.vim.
+" 8-color fallback: on terminals reporting &t_Co < 16, fold any bright
+" token (8-15) down to its base 0-7 ANSI color and add 'bold' to keep some
+" visual distinction.
 function! s:bex_hi(group, fg_token) abort
     let l:cmd = 'highlight! ' . a:group
     let l:attrs = []
@@ -64,10 +59,8 @@ function! s:bex_hi(group, fg_token) abort
     if a:fg_token !=# '' && has_key(s:bex_tokens, a:fg_token)
         let l:fg = s:bex_tokens[a:fg_token]
 
-        " GUI is the default color representation.
         let l:cmd .= ' guifg=' . s:bex_gui_colors[l:fg]
 
-        " Terminal fallback.
         if &t_Co < 16 && l:fg >= 8 && l:fg <= 15
             let l:fg = l:fg - 8
             call add(l:attrs, 'bold')
@@ -87,14 +80,17 @@ endfunction
 function! bex#RedefineHighlights() abort
     call s:bex_hi('BexHeader',          'br_yellow')
     call s:bex_hi('BexInfo',            'br_black')
-    call s:bex_hi('BexID',              'br_black')
     call s:bex_hi('BexDir',             'br_yellow')
     call s:bex_hi('BexFile',            'br_white')
-    call s:bex_hi('BexHiddenID',        'br_black')
     call s:bex_hi('BexHiddenDir',       'yellow')
     call s:bex_hi('BexHiddenFile',      'white')
     call s:bex_hi('BexVisible',         'br_green')
     call s:bex_hi('BexHidden',          'br_red')
+    call s:bex_hi('BexExec',            'br_green')
+    " Rendered on the '@ -> target' virtual text bex#appends to symlink
+    " entries -- see s:reapply_props() / s:render() in autoload/bex.vim.
+    call s:bex_hi('BexSymlink',         'br_blue')
+
     call s:bex_hi('BexChangesDir',      'br_yellow')
     call s:bex_hi('BexChangesDel',      'br_red')
     call s:bex_hi('BexChangesAdd',      'br_green')
@@ -122,7 +118,6 @@ function! s:bex_cmd(args) abort
         return
     endif
 
-    " If a bex buffer already exists, navigate to the new path
     for l:buf in range(1, bufnr('$'))
         if getbufvar(l:buf, '&filetype') ==# 'bex' && bufexists(l:buf)
             call setbufvar(l:buf, '&modified', 0)
