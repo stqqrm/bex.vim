@@ -51,6 +51,32 @@ let g:bex_gui_br_magenta = '#FF55FF'
 let g:bex_gui_br_cyan    = '#55FFFF'
 let g:bex_gui_br_white   = '#FFFFFF'
 ```
+To change highlight groups you simply apply a valid token, you can find token list here [here](#valid-color-tokens)
+```vim
+let g:bex_hi_BexHeader          = 'br_yellow'
+let g:bex_hi_BexInfo            = 'br_black'
+let g:bex_hi_BexDir             = 'br_yellow'
+let g:bex_hi_BexFile            = 'br_white'
+let g:bex_hi_BexHiddenDir       = 'yellow'
+let g:bex_hi_BexHiddenFile      = 'white'
+let g:bex_hi_BexVisible         = 'br_green'
+let g:bex_hi_BexHidden          = 'br_red'
+let g:bex_hi_BexID              = 'br_black'
+let g:bex_hi_BexHiddenID        = 'br_black'
+let g:bex_hi_BexExec            = 'br_green'
+let g:bex_hi_BexSymlink         = 'br_blue'
+
+let g:bex_hi_BexChangesDir      = 'br_yellow'
+let g:bex_hi_BexChangesDel      = 'br_red'
+let g:bex_hi_BexChangesAdd      = 'br_green'
+let g:bex_hi_BexChangesRename   = 'br_cyan'
+let g:bex_hi_BexChangesMoveFrom = 'br_black'
+let g:bex_hi_BexChangesMoveTo   = 'br_magenta'
+let g:bex_hi_BexChangesCopy     = 'br_blue'
+let g:bex_hi_BexDotfilesOn      = 'br_green'
+let g:bex_hi_BexDotfilesOff     = 'br_red'
+```
+
 
 ## Binds
 
