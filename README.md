@@ -75,6 +75,7 @@ let g:bex_hi_BexChangesMoveTo   = 'br_magenta'
 let g:bex_hi_BexChangesCopy     = 'br_blue'
 let g:bex_hi_BexDotfilesOn      = 'br_green'
 let g:bex_hi_BexDotfilesOff     = 'br_red'
+let g:bex_hi_BexModified        = 'br_blue'
 ```
 ## Color Tokens
 ```
