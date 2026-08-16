@@ -58,6 +58,17 @@ let g:bex_key_hidden   = get(g:, 'bex_key_hidden',   '.')     " toggle dotfiles
 let g:bex_key_extract  = get(g:, 'bex_key_extract',  'e')     " extract -- changes view only, see note above
 let g:bex_key_goto_def = get(g:, 'bex_key_goto_def', 'gd')    " follow symlink to its target
 
+" Original hardcoded bindings from before keys became configurable.
+" s:setup_nav_maps()/s:sync_extract_map()/s:setup_image_nav_map() always
+" attempt to unmap these too (in addition to whatever they tracked
+" themselves), since a bex buffer that's been sitting open/hidden since
+" before g:bex_key_* was introduced -- or since before you last changed
+" one -- can carry a mapping neither this session's tracking variable
+" nor a single BufEnter would otherwise ever catch and remove.
+let s:bex_legacy_nav_keys    = ['<CR>', '-', '<Tab>', '.', 'gd']
+let s:bex_legacy_extract_key = 'e'
+let s:bex_legacy_image_key   = '-'
+
 " Scoped to bex.vim's own path (not a <buffer>-local autocmd) so it only
 " fires when this file itself is resourced, not every script sourced
 " while a bex buffer happens to be active.
@@ -1944,14 +1955,15 @@ endfunction
 " (Re)applies the buffer-local navigation mappings using the configured
 " g:bex_key_* variables. Split out of bex#Open() so bex#ReloadKeys() can
 " re-run it on an already-open buffer after the user changes a binding.
-" Explicitly unmaps whatever keys were bound on a *previous* call first --
-" otherwise, e.g., changing g:bex_key_open after bex was already opened
-" once leaves the old key working alongside the new one instead of being
-" replaced by it.
+" Explicitly unmaps whatever keys were bound on a *previous* call first,
+" AND every legacy hardcoded key -- otherwise, e.g., changing g:bex_key_open
+" after bex was already opened once (possibly in an earlier session, before
+" this variable even existed) leaves the old key working alongside the new
+" one instead of being replaced by it. Idempotent and cheap to call often.
 "
 " g:bex_key_extract is intentionally excluded here -- see s:sync_extract_map().
 function! s:setup_nav_maps() abort
-    for l:old_key in get(b:, 'bex_nav_keys', [])
+    for l:old_key in get(b:, 'bex_nav_keys', []) + s:bex_legacy_nav_keys
         silent! execute 'nunmap <buffer> ' . l:old_key
     endfor
 
@@ -1972,21 +1984,24 @@ endfunction
 
 " Binds/unbinds g:bex_key_extract based on whether the buffer is currently
 " showing the changes view. Kept separate from s:setup_nav_maps() (and NOT
-" called from BufEnter's blanket rebind) so that 'e' only ever shadows
-" Vim's normal "end of word" motion while the changes view is actually on
-" screen -- everywhere else in a bex buffer, 'e' behaves exactly like it
-" would in any other Vim buffer. Idempotent: safe to call any time
-" b:bex_changes_view might have changed, or the key itself has.
+" called from BufEnter's blanket rebind) so that the extract key only ever
+" shadows Vim's normal keymap while the changes view is actually on
+" screen -- everywhere else in a bex buffer, e.g. 'e' behaves exactly like
+" it would in any other Vim buffer (end of word). Always unmaps both
+" whatever was tracked AND the legacy default 'e', regardless of l:want,
+" so a stale binding from before a key change (or before this tracking
+" existed) can never survive.
 function! s:sync_extract_map() abort
     let l:want = get(b:, 'bex_changes_view', 0)
-    let l:bound_key = get(b:, 'bex_extract_key', '')
 
-    if !empty(l:bound_key) && (!l:want || l:bound_key !=# g:bex_key_extract)
-        silent! execute 'nunmap <buffer> ' . l:bound_key
-        let b:bex_extract_key = ''
-    endif
+    for l:old_key in [get(b:, 'bex_extract_key', ''), s:bex_legacy_extract_key]
+        if !empty(l:old_key)
+            silent! execute 'nunmap <buffer> ' . l:old_key
+        endif
+    endfor
+    let b:bex_extract_key = ''
 
-    if l:want && empty(get(b:, 'bex_extract_key', ''))
+    if l:want
         execute 'nnoremap <buffer> <silent> ' . g:bex_key_extract . ' :call bex#ExtractUnderCursor()<CR>'
         let b:bex_extract_key = g:bex_key_extract
     endif
@@ -1995,7 +2010,7 @@ endfunction
 " Same unmap-then-rebind pattern as s:setup_nav_maps(), for the single
 " "return to browsing" key on an image-preview terminal buffer.
 function! s:setup_image_nav_map() abort
-    for l:old_key in get(b:, 'bex_image_nav_keys', [])
+    for l:old_key in get(b:, 'bex_image_nav_keys', []) + [s:bex_legacy_image_key]
         silent! execute 'nunmap <buffer> ' . l:old_key
     endfor
     execute 'nnoremap <buffer> <silent> ' . g:bex_key_up . ' :call bex#ReturnFromImage()<CR>'
