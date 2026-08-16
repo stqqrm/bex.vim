@@ -44,30 +44,6 @@ let s:bex_tokens = {
       \ 'br_white':   15,
       \ }
 
-let g:bex_gui_black      = get(g:, 'bex_gui_black',      'Black')
-let g:bex_gui_red        = get(g:, 'bex_gui_red',        'Red')
-let g:bex_gui_green      = get(g:, 'bex_gui_green',      'Green')
-let g:bex_gui_yellow     = get(g:, 'bex_gui_yellow',     'Yellow')
-let g:bex_gui_blue       = get(g:, 'bex_gui_blue',       'Blue')
-let g:bex_gui_magenta    = get(g:, 'bex_gui_magenta',    'Magenta')
-let g:bex_gui_cyan       = get(g:, 'bex_gui_cyan',       'Cyan')
-let g:bex_gui_white      = get(g:, 'bex_gui_white',      'LightGray')
-let g:bex_gui_br_black   = get(g:, 'bex_gui_br_black',   'DarkGray')
-let g:bex_gui_br_red     = get(g:, 'bex_gui_br_red',     'LightRed')
-let g:bex_gui_br_green   = get(g:, 'bex_gui_br_green',   'LightGreen')
-let g:bex_gui_br_yellow  = get(g:, 'bex_gui_br_yellow',  'LightYellow')
-let g:bex_gui_br_blue    = get(g:, 'bex_gui_br_blue',    'LightBlue')
-let g:bex_gui_br_magenta = get(g:, 'bex_gui_br_magenta', 'LightMagenta')
-let g:bex_gui_br_cyan    = get(g:, 'bex_gui_br_cyan',    'LightCyan')
-let g:bex_gui_br_white   = get(g:, 'bex_gui_br_white',   'White')
-
-let s:bex_gui_colors = [
-      \ g:bex_gui_black, g:bex_gui_red, g:bex_gui_green, g:bex_gui_yellow,
-      \ g:bex_gui_blue, g:bex_gui_magenta, g:bex_gui_cyan, g:bex_gui_white,
-      \ g:bex_gui_br_black, g:bex_gui_br_red, g:bex_gui_br_green, g:bex_gui_br_yellow,
-      \ g:bex_gui_br_blue, g:bex_gui_br_magenta, g:bex_gui_br_cyan, g:bex_gui_br_white
-      \ ]
-
 let g:bex_hi_BexHeader          = get(g:, 'bex_hi_BexHeader',          'br_yellow')
 let g:bex_hi_BexInfo            = get(g:, 'bex_hi_BexInfo',            'br_black')
 let g:bex_hi_BexDir             = get(g:, 'bex_hi_BexDir',             'br_yellow')
@@ -102,7 +78,7 @@ function! s:bex_hi(group, fg_token) abort
     if a:fg_token !=# '' && has_key(s:bex_tokens, a:fg_token)
         let l:fg = s:bex_tokens[a:fg_token]
 
-        let l:cmd .= ' guifg=' . s:bex_gui_colors[l:fg]
+        let l:cmd .= ' guifg=NONE'
 
         if &t_Co < 16 && l:fg >= 8 && l:fg <= 15
             let l:fg = l:fg - 8
