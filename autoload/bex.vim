@@ -93,7 +93,7 @@ function! bex#Open(path) abort
     nnoremap <buffer> <silent> <Tab> :call bex#ToggleChangesView()<CR>
     nnoremap <buffer> <silent> e :call bex#ExtractUnderCursor()<CR>
     nnoremap <buffer> <silent> gd :call bex#GotoDefinition()<CR>
-    call s:setup_jump_maps()
+    call s:setup_jump_maps_bex()
 
     call s:render()
 
@@ -120,7 +120,12 @@ function! bex#Toggle() abort
     for l:buf in range(1, bufnr('$'))
         if getbufvar(l:buf, '&filetype') ==# 'bex' && bufexists(l:buf)
             call setbufvar(l:buf, '&modified', 0)
-            execute 'buffer ' . l:buf
+            " Splitting only protects unsaved changes in the window we're
+            " leaving -- otherwise reuse it directly. Without this check,
+            " toggling into an already-open (hidden) bex buffer from a
+            " modified window throws E37 ("No write since last change"),
+            " since plain :buffer refuses to abandon unsaved changes.
+            execute (&modified ? 'sbuffer ' : 'buffer ') . l:buf
             return
         endif
     endfor
@@ -1502,38 +1507,15 @@ function! s:lock_cursor() abort
 endfunction
 
 function! s:ensure_header_highlights() abort
-    " Must exist before prop_type_add below (which throws E970 otherwise) --
-    " this used to fire on every CursorMoved and eat the user's next keypress.
-    highlight default BexDotfilesOn  ctermfg=Green guifg=#98c379
-    highlight default BexDotfilesOff ctermfg=Red   guifg=#e06c75
-
     if empty(prop_type_get('BexDotfilesOn'))
         call prop_type_add('BexDotfilesOn', {'highlight': 'BexDotfilesOn'})
     endif
     if empty(prop_type_get('BexDotfilesOff'))
         call prop_type_add('BexDotfilesOff', {'highlight': 'BexDotfilesOff'})
     endif
-endfunction
-
-" Compact single-line summary of the current directory's pending changes,
-" e.g. "-old.txt ~renamed.txt +new.txt". Truncated by the caller to fit.
-function! s:change_summary_text() abort
-    if !has_key(g:bex_cache, b:bex_dir) | return '' | endif
-    let l:state = g:bex_cache[b:bex_dir]
-    let l:parts = []
-    for l:d in get(l:state, 'delete', [])
-        call add(l:parts, '-' . l:d.name)
-    endfor
-    for l:r in get(l:state, 'rename', [])
-        call add(l:parts, '~' . l:r.new)
-    endfor
-    for l:m in get(l:state, 'move_to', [])
-        call add(l:parts, '+' . l:m.name)
-    endfor
-    for l:e in get(l:state, 'entries', [])
-        call add(l:parts, '+' . l:e)
-    endfor
-    return join(l:parts, ' ')
+    if empty(prop_type_get('BexModified'))
+        call prop_type_add('BexModified', {'highlight': 'BexModified'})
+    endif
 endfunction
 
 function! s:position_header_popup() abort
@@ -1551,28 +1533,29 @@ function! s:position_header_popup() abort
     if !isdirectory(b:bex_dir)
         let l:left .= '  [new]'
     endif
-    let l:right    = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
-    let l:right_hl = g:bex_show_hidden ? 'BexDotfilesOn' : 'BexDotfilesOff'
 
-    let l:summary = s:change_summary_text()
-    if !empty(l:summary)
-        let l:avail = winwidth(l:winid) - strdisplaywidth(l:left) - strdisplaywidth(l:right) - 6
-        if l:avail < 1
-            let l:summary = ''
-        elseif strdisplaywidth(l:summary) > l:avail
-            let l:summary = strcharpart(l:summary, 0, max([l:avail - 3, 0])) . '...'
-        endif
+    let l:dotfiles    = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
+    let l:dotfiles_hl = g:bex_show_hidden ? 'BexDotfilesOn' : 'BexDotfilesOff'
+
+    let l:modified = !empty(g:bex_cache)
+    let l:right     = l:modified ? '* ' . l:dotfiles : l:dotfiles
+
+    let l:width = max([winwidth(l:winid), strdisplaywidth(l:left) + strdisplaywidth(l:right) + 1])
+    let l:pad   = max([l:width - strdisplaywidth(l:left) - strdisplaywidth(l:right), 1])
+    let l:text  = l:left . repeat(' ', l:pad) . l:right
+
+    let l:right_col = len(l:left) + l:pad + 1
+    let l:props = []
+    if l:modified
+        call add(l:props, {'col': l:right_col, 'length': 1, 'type': 'BexModified'})
+        call add(l:props, {'col': l:right_col + 2, 'length': len(l:dotfiles), 'type': l:dotfiles_hl})
+    else
+        call add(l:props, {'col': l:right_col, 'length': len(l:dotfiles), 'type': l:dotfiles_hl})
     endif
-    let l:left_full = empty(l:summary) ? l:left : l:left . '  ' . l:summary
 
-    let l:width = max([winwidth(l:winid), strdisplaywidth(l:left_full) + strdisplaywidth(l:right) + 1])
-    let l:pad   = max([l:width - strdisplaywidth(l:left_full) - strdisplaywidth(l:right), 1])
-    let l:text  = l:left_full . repeat(' ', l:pad) . l:right
-
-    let l:right_col = len(l:left_full) + l:pad + 1
     let l:content = [{
         \ 'text': l:text,
-        \ 'props': [{'col': l:right_col, 'length': len(l:right), 'type': l:right_hl}]
+        \ 'props': l:props
         \ }]
 
     let l:row = g:bex_header_at_bottom
@@ -1765,13 +1748,52 @@ function! s:changes_view_owner_dir(lnum) abort
         if empty(l:hdr) | continue | endif
         if l:hdr =~# '^[+~*-]\s' | continue | endif
         let l:expanded = substitute(l:hdr, '^\~/', l:home . '/', '')
-        let l:expanded = substitute(l:expanded, '[/\\]$', '', '')
+        " Don't strip a lone root slash ('/' or '\') down to '' -- g:bex_cache
+        " keys for the root directory keep that slash (see bex#Open/Navigate,
+        " which only strip when len > 1), so stripping it here made the
+        " root directory's pending changes unmatchable and unrevertable.
+        let l:expanded = len(l:expanded) > 1 ? substitute(l:expanded, '[/\\]$', '', '') : l:expanded
         if has_key(g:bex_cache, l:expanded)
             let l:owner_dir = l:expanded
         endif
         break
     endfor
     return l:owner_dir
+endfunction
+
+function! s:remove_move_to_by_id(id) abort
+    for [l:dir, l:state] in items(g:bex_cache)
+        let l:before = len(l:state.move_to)
+        let l:state.move_to = filter(copy(l:state.move_to), {_, v -> v.id !=# a:id})
+        if len(l:state.move_to) == l:before | continue | endif
+        let g:bex_cache[l:dir] = l:state
+        if empty(l:state.delete) && empty(l:state.rename)
+            \ && empty(l:state.entries) && empty(l:state.move_to)
+            call remove(g:bex_cache, l:dir)
+        endif
+    endfor
+endfunction
+
+function! s:remove_delete_by_id(id) abort
+    for [l:dir, l:state] in items(g:bex_cache)
+        let l:before = len(l:state.delete)
+        let l:state.delete = filter(copy(l:state.delete), {_, v -> v.id !=# a:id})
+        if len(l:state.delete) == l:before | continue | endif
+        let g:bex_cache[l:dir] = l:state
+        if empty(l:state.delete) && empty(l:state.rename)
+            \ && empty(l:state.entries) && empty(l:state.move_to)
+            call remove(g:bex_cache, l:dir)
+        endif
+    endfor
+endfunction
+
+function! s:move_to_exists(id) abort
+    for l:state in values(g:bex_cache)
+        for l:m in l:state.move_to
+            if l:m.id ==# a:id | return 1 | endif
+        endfor
+    endfor
+    return 0
 endfunction
 
 function! s:revert_change_under_cursor() abort
@@ -1804,10 +1826,22 @@ function! s:revert_change_under_cursor() abort
 
         if l:sym ==# '-'
             let l:state.delete = filter(copy(l:state.delete), {_, v -> v.id !=# l:id})
+            let g:bex_cache[l:owner_dir] = l:state
+            if empty(l:state.delete) && empty(l:state.rename)
+                \ && empty(l:state.entries) && empty(l:state.move_to)
+                call remove(g:bex_cache, l:owner_dir)
+            endif
+            call s:remove_move_to_by_id(l:id)
         elseif l:sym ==# '~'
             let l:state.rename = filter(copy(l:state.rename), {_, v -> v.id !=# l:id})
+            let g:bex_cache[l:owner_dir] = l:state
+            if empty(l:state.delete) && empty(l:state.rename)
+                \ && empty(l:state.entries) && empty(l:state.move_to)
+                call remove(g:bex_cache, l:owner_dir)
+            endif
         else
             let l:name = matchstr(l:line, '^\s*[+*]\s\+\/[0-9a-zA-Z]\+\s\+\zs.*')
+            let l:was_move = l:sym ==# '+'
             let l:removed = 0
             let l:kept = []
             for l:m in l:state.move_to
@@ -1818,12 +1852,14 @@ function! s:revert_change_under_cursor() abort
                 endif
             endfor
             let l:state.move_to = l:kept
-        endif
-
-        let g:bex_cache[l:owner_dir] = l:state
-        if empty(l:state.delete) && empty(l:state.rename)
-            \ && empty(l:state.entries) && empty(l:state.move_to)
-            call remove(g:bex_cache, l:owner_dir)
+            let g:bex_cache[l:owner_dir] = l:state
+            if empty(l:state.delete) && empty(l:state.rename)
+                \ && empty(l:state.entries) && empty(l:state.move_to)
+                call remove(g:bex_cache, l:owner_dir)
+            endif
+            if l:was_move && !s:move_to_exists(l:id)
+                call s:remove_delete_by_id(l:id)
+            endif
         endif
     endif
 
@@ -1853,6 +1889,19 @@ endfunction
 function! s:setup_jump_maps() abort
     nnoremap <buffer> <silent> <C-o> :call bex#JumpBack()<CR>
     nnoremap <buffer> <silent> <C-i> :call bex#JumpForward()<CR>
+endfunction
+
+" Bex-buffer-only variant: <C-i> and <Tab> are the exact same byte in
+" terminal Vim, and <Tab> is already bound in this buffer to
+" bex#ToggleChangesView() (see bex#Open()). Mapping <C-i> here as well
+" would silently clobber that binding -- whichever nnoremap ran last
+" wins the key, and s:setup_jump_maps() used to run after the <Tab>
+" mapping, which is exactly what broke it. So only <C-o> (jump back) is
+" bound in the bex buffer itself; jumping *forward* still works from
+" wherever <C-o> or a file/image open lands you, via the full variant
+" above, just not by pressing <Tab>/<C-i> while sitting in bex.
+function! s:setup_jump_maps_bex() abort
+    nnoremap <buffer> <silent> <C-o> :call bex#JumpBack()<CR>
 endfunction
 
 " Records a:entry as the new "current" stop. No-op while a jump traversal
@@ -1962,8 +2011,14 @@ function! s:goto_buf_entry(entry) abort
     " best-effort recreate it from the saved path.
     if empty(get(a:entry, 'path', '')) | return | endif
 
+    " Splitting here is only to protect pending bex changes: if we're
+    " sitting in bex with staged renames/deletes/creates (&modified),
+    " keep bex on screen and open the recreated stop in a new split.
+    " Otherwise -- the common case, nothing staged -- just replace this
+    " window's contents directly; no reason to fragment the layout for a
+    " plain "jump to this file/image" hop.
     if &filetype ==# 'bex'
-        if winnr('$') == 1
+        if winnr('$') == 1 && &modified
             leftabove vsplit
         endif
         wincmd p
