@@ -26,12 +26,15 @@ A simple ID-tracked file browser for Vim. The name **bex** stands for **Better E
 ```
 
 ## Configuration
+
 Moving Bex header to top/bottom can be set with:
+
 ```vim
 let g:bex_header_at_bottom = 1
 ```
 
 To change theme for 24-bit true color you can set these global variables if termguicolors is set, else it defaults to whatever ANSI colors are already set, if notermguicolors is set, it uses cterm colors, and 8 color mode with bold is used if &t_Co < 16.
+
 ```vim
 let g:bex_gui_black      = '#000000'
 let g:bex_gui_red        = '#AA0000'
@@ -51,7 +54,9 @@ let g:bex_gui_br_magenta = '#FF55FF'
 let g:bex_gui_br_cyan    = '#55FFFF'
 let g:bex_gui_br_white   = '#FFFFFF'
 ```
+
 To change highlight groups you simply apply a valid token, you can find token list here [Color Tokens](#color-tokens)
+
 ```vim
 let g:bex_hi_BexHeader          = 'br_yellow'
 let g:bex_hi_BexInfo            = 'br_black'
@@ -77,7 +82,20 @@ let g:bex_hi_BexDotfilesOn      = 'br_green'
 let g:bex_hi_BexDotfilesOff     = 'br_red'
 let g:bex_hi_BexModified        = 'br_blue'
 ```
+
+Navigation binds:
+
+```vim
+let g:bex_key_open     = '<CR>'
+let g:bex_key_up       = '-'
+let g:bex_key_changes  = '<Tab>'
+let g:bex_key_hidden   = '.'
+let g:bex_key_extract  = 'e'
+let g:bex_key_goto_def = 'gd'
+```
+
 ## Color Tokens
+
 ```
 0   black
 1   red
