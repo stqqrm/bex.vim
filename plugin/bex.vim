@@ -90,6 +90,7 @@ let g:bex_hi_BexChangesMoveTo   = get(g:, 'bex_hi_BexChangesMoveTo',   'br_magen
 let g:bex_hi_BexChangesCopy     = get(g:, 'bex_hi_BexChangesCopy',     'br_blue')
 let g:bex_hi_BexDotfilesOn      = get(g:, 'bex_hi_BexDotfilesOn',      'br_green')
 let g:bex_hi_BexDotfilesOff     = get(g:, 'bex_hi_BexDotfilesOff',     'br_red')
+let g:bex_hi_BexModified        = get(g:, 'bex_hi_BexModified',        'br_blue')
 
 " 8-color fallback: on terminals reporting &t_Co < 16, fold any bright
 " token (8-15) down to its base 0-7 ANSI color and add 'bold' to keep some
@@ -142,6 +143,7 @@ function! bex#RedefineHighlights() abort
     call s:bex_hi('BexChangesCopy',     g:bex_hi_BexChangesCopy)
     call s:bex_hi('BexDotfilesOn',      g:bex_hi_BexDotfilesOn)
     call s:bex_hi('BexDotfilesOff',     g:bex_hi_BexDotfilesOff)
+    call s:bex_hi('BexModified',        g:bex_hi_BexModified)
 endfunction
 call bex#RedefineHighlights()
 
@@ -163,7 +165,10 @@ function! s:bex_cmd(args) abort
     for l:buf in range(1, bufnr('$'))
         if getbufvar(l:buf, '&filetype') ==# 'bex' && bufexists(l:buf)
             call setbufvar(l:buf, '&modified', 0)
-            execute 'buffer ' . l:buf
+            " Splitting only protects unsaved changes in the window we're
+            " leaving -- otherwise reuse it directly, same rule bex#Open()
+            " and the jumplist use everywhere else.
+            execute (&modified ? 'sbuffer ' : 'buffer ') . l:buf
             if !empty(l:args)
                 call bex#Navigate(l:args)
             endif
