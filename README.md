@@ -145,4 +145,4 @@ Plug 'stqqrm/bex.vim'
 
 ## Todo
 
-* Add support for unpacking/packing .zip, .rar, .7z and .tar.
+* Add support for reading/writing archived directories, .zip, .rar, .7z and .tar. (Feature will enable if binaries are found in $PATH)
