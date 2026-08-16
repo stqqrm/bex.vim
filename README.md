@@ -33,28 +33,6 @@ Moving Bex header to top/bottom can be set with:
 let g:bex_header_at_bottom = 1
 ```
 
-To change theme for 24-bit true color you can set these global variables if termguicolors is set, else it defaults to whatever ANSI colors are already set, if notermguicolors is set, it uses cterm colors, and 8 color mode with bold is used if &t_Co < 16.
-
-```vim
-let g:bex_gui_black      = '#000000'
-let g:bex_gui_red        = '#AA0000'
-let g:bex_gui_green      = '#00AA00'
-let g:bex_gui_yellow     = '#AA5500'
-let g:bex_gui_blue       = '#0000AA'
-let g:bex_gui_magenta    = '#AA00AA'
-let g:bex_gui_cyan       = '#00AAAA'
-let g:bex_gui_white      = '#AAAAAA'
-
-let g:bex_gui_br_black   = '#555555'
-let g:bex_gui_br_red     = '#FF5555'
-let g:bex_gui_br_green   = '#55FF55'
-let g:bex_gui_br_yellow  = '#FFFF55'
-let g:bex_gui_br_blue    = '#5555FF'
-let g:bex_gui_br_magenta = '#FF55FF'
-let g:bex_gui_br_cyan    = '#55FFFF'
-let g:bex_gui_br_white   = '#FFFFFF'
-```
-
 To change highlight groups you simply apply a valid token, you can find token list here [Color Tokens](#color-tokens)
 
 ```vim
