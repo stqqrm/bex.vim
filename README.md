@@ -104,7 +104,7 @@ RETURN
     Navigate into file/directory.
 
 -
-    Navigate to previous directory.
+    Navigate to sub directory.
 
 TAB
     Toggle between viewing file system modifications and current directory.
