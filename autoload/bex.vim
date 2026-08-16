@@ -40,6 +40,24 @@ let g:bex_image_magick_args = get(g:, 'bex_image_magick_args',
     \ ['-geometry', '1024x768>', '-colorspace', 'sRGB',
     \  '-dither', 'FloydSteinberg', '-colors', '256'])
 
+" --- Configurable Key Bindings ---
+" Override any of these in your vimrc *before* bex loads to rebind. Accepts
+" plain characters ('.', 'e') or Vim key notation ('<CR>', '<Tab>', '<F5>').
+" If you change one after Vim has started, call bex#ReloadKeys() to apply
+" it to any bex/image buffers already open.
+"
+" g:bex_key_extract is deliberately NOT applied buffer-wide like the
+" others -- it's only bound while sitting in the changes view (see
+" s:sync_extract_map()). Binding it unconditionally would permanently
+" shadow Vim's normal 'e' (end of word) motion in every bex buffer, not
+" just the changes view where "extract" actually applies.
+let g:bex_key_open     = get(g:, 'bex_key_open',     '<CR>')  " open file/dir; also revert in changes view
+let g:bex_key_up       = get(g:, 'bex_key_up',       '-')     " go to parent directory; also "back" from image preview
+let g:bex_key_changes  = get(g:, 'bex_key_changes',  '<Tab>') " toggle changes view
+let g:bex_key_hidden   = get(g:, 'bex_key_hidden',   '.')     " toggle dotfiles
+let g:bex_key_extract  = get(g:, 'bex_key_extract',  'e')     " extract -- changes view only, see note above
+let g:bex_key_goto_def = get(g:, 'bex_key_goto_def', 'gd')    " follow symlink to its target
+
 " Scoped to bex.vim's own path (not a <buffer>-local autocmd) so it only
 " fires when this file itself is resourced, not every script sourced
 " while a bex buffer happens to be active.
@@ -88,11 +106,8 @@ function! bex#Open(path) abort
     let b:coc_enabled = 0
     let b:coc_suggest_disable = 1
 
-    nnoremap <buffer> <silent> . :call bex#ToggleHidden()<CR>
-    nnoremap <buffer> <silent> <CR> :call bex#OnSelect()<CR>
-    nnoremap <buffer> <silent> <Tab> :call bex#ToggleChangesView()<CR>
-    nnoremap <buffer> <silent> e :call bex#ExtractUnderCursor()<CR>
-    nnoremap <buffer> <silent> gd :call bex#GotoDefinition()<CR>
+    call s:setup_nav_maps()
+    call s:sync_extract_map()
     call s:setup_jump_maps_bex()
 
     call s:render()
@@ -101,7 +116,7 @@ function! bex#Open(path) abort
         autocmd! * <buffer>
         autocmd VimResized                <buffer> call s:reapply_props() | call s:position_header_popup()
         autocmd BufWriteCmd               <buffer> call s:on_write()
-        autocmd BufEnter                  <buffer> call s:reapply_props() | call s:position_header_popup()
+        autocmd BufEnter                  <buffer> call s:setup_nav_maps() | call s:sync_extract_map() | call s:reapply_props() | call s:position_header_popup()
         autocmd BufLeave                  <buffer> call bex#UpdateVirtualDirectory(b:bex_dir)
         autocmd BufWinLeave               <buffer> call s:close_header_popup()
         autocmd BufUnload                 <buffer> call s:on_unload() | call s:close_header_popup()
@@ -176,6 +191,7 @@ function! bex#Navigate(path, ...) abort
     " and stale changes-view text would make every tracked file look deleted.
     if get(b:, 'bex_changes_view', 0)
         let b:bex_changes_view = 0
+        call s:sync_extract_map()
         setlocal modifiable
         call s:render()
     endif
@@ -264,13 +280,13 @@ function! bex#GoUp() abort
 endfunction
 
 " Stages the item under the cursor in the changes view to land in the
-" directory that was open when <Tab> was pressed. apply_all() already
-" treats a move_to as a real move whenever a matching delete exists
+" directory that was open when the changes view was toggled on. apply_all()
+" already treats a move_to as a real move whenever a matching delete exists
 " elsewhere in g:bex_cache -- exactly the state a cut leaves things in --
 " so nothing else needs to change on the source side.
 function! bex#ExtractUnderCursor() abort
     if !get(b:, 'bex_changes_view', 0)
-        echo 'bex: e only works from the changes view (<Tab>)'
+        echo 'bex: extract only works from the changes view'
         return
     endif
 
@@ -426,12 +442,13 @@ function! s:start_image_terminal(path) abort
     setlocal nomodified nobuflisted nonumber norelativenumber
     setlocal signcolumn=no nowrap nolist
 
-    nnoremap <buffer> <silent> - :call bex#ReturnFromImage()<CR>
+    call s:setup_image_nav_map()
     call s:setup_jump_maps()
 
     augroup bex_image_header
         autocmd! * <buffer>
         autocmd VimResized,WinScrolled,WinEnter <buffer> call s:reposition_image_header()
+        autocmd WinEnter                        <buffer> call s:setup_image_nav_map()
         autocmd VimResized                      <buffer> call s:redraw_image()
         autocmd BufWinLeave,BufUnload    nested  <buffer> call s:close_image_header()
     augroup END
@@ -446,7 +463,8 @@ function! s:redraw_image() abort
     call s:start_image_terminal(b:bex_image_src)
 endfunction
 
-" Bound to '-': switch back to browsing and clean up the terminal buffer.
+" Bound to g:bex_key_up: switch back to browsing and clean up the terminal
+" buffer.
 function! bex#ReturnFromImage() abort
     if &buftype !=# 'terminal' || !exists('b:bex_image_src')
         return
@@ -569,6 +587,7 @@ endfunction
 function! bex#ToggleChangesView() abort
     if get(b:, 'bex_changes_view', 0)
         let b:bex_changes_view = 0
+        call s:sync_extract_map()
         setlocal modifiable
         call s:render()
 
@@ -603,6 +622,7 @@ function! bex#ToggleChangesView() abort
         \ 'id': matchstr(getline('.'), '^\/[0-9a-zA-Z]\+')
         \ }
     let b:bex_changes_view = 1
+    call s:sync_extract_map()
     call s:show_changes_in_buffer()
 endfunction
 
@@ -873,6 +893,7 @@ endfunction
 function! s:on_write() abort
     if get(b:, 'bex_changes_view', 0)
         let b:bex_changes_view = 0
+        call s:sync_extract_map()
         setlocal modifiable
         call s:render()
     else
@@ -1151,6 +1172,7 @@ function! s:on_quit() abort
 
     if get(b:, 'bex_changes_view', 0)
         let b:bex_changes_view = 0
+        call s:sync_extract_map()
         setlocal modifiable
         call s:render()
     endif
@@ -1506,6 +1528,9 @@ function! s:lock_cursor() abort
     endif
 endfunction
 
+" Colors themselves are (re)defined centrally in bex#RedefineHighlights()
+" (see plugin/bex.vim), which runs on load, ColorScheme, and SourcePost --
+" this only needs to make sure the prop types exist to reference them.
 function! s:ensure_header_highlights() abort
     if empty(prop_type_get('BexDotfilesOn'))
         call prop_type_add('BexDotfilesOn', {'highlight': 'BexDotfilesOn'})
@@ -1537,6 +1562,10 @@ function! s:position_header_popup() abort
     let l:dotfiles    = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
     let l:dotfiles_hl = g:bex_show_hidden ? 'BexDotfilesOn' : 'BexDotfilesOff'
 
+    " '*' is a plain global indicator that *something* is staged somewhere
+    " (any directory), not a per-entry summary -- the full breakdown is one
+    " g:bex_key_changes away in the changes view. Placed immediately left
+    " of the dotfiles indicator, on the right side of the bar.
     let l:modified = !empty(g:bex_cache)
     let l:right     = l:modified ? '* ' . l:dotfiles : l:dotfiles
 
@@ -1621,9 +1650,10 @@ function! s:reapply_props() abort
     syntax match BexHiddenID   /^\/[0-9a-zA-Z]\+\ze\s\+\./
 endfunction
 
-" Changes View -- toggled in-place with <Tab>. Builds a read-only
-" rendering of everything staged across g:bex_cache directly into the
-" current buffer; <Tab> again (or writing) returns to the editable listing.
+" Changes View -- toggled in-place with g:bex_key_changes (default <Tab>).
+" Builds a read-only rendering of everything staged across g:bex_cache
+" directly into the current buffer; toggling again (or writing) returns
+" to the editable listing.
 
 " {lines, highlights} for every directory with pending changes in
 " g:bex_cache -- the full picture, not just the current directory (that
@@ -1761,6 +1791,13 @@ function! s:changes_view_owner_dir(lnum) abort
     return l:owner_dir
 endfunction
 
+" A move stages two linked cache entries: a 'delete' in the source
+" directory and a 'move_to' in the destination directory. Reverting only
+" one side (what used to happen here) leaves the other stranded --
+" cancel the delete and apply_all() treats the leftover move_to as a
+" plain copy (duplicating the file); cancel the move_to and the source
+" still gets deleted with nowhere left to land. These two helpers let
+" s:revert_change_under_cursor() cancel both halves together.
 function! s:remove_move_to_by_id(id) abort
     for [l:dir, l:state] in items(g:bex_cache)
         let l:before = len(l:state.move_to)
@@ -1867,6 +1904,7 @@ function! s:revert_change_under_cursor() abort
 
     if empty(g:bex_cache)
         let b:bex_changes_view = 0
+        call s:sync_extract_map()
         setlocal modifiable
         call s:render()
     else
@@ -1892,16 +1930,99 @@ function! s:setup_jump_maps() abort
 endfunction
 
 " Bex-buffer-only variant: <C-i> and <Tab> are the exact same byte in
-" terminal Vim, and <Tab> is already bound in this buffer to
-" bex#ToggleChangesView() (see bex#Open()). Mapping <C-i> here as well
-" would silently clobber that binding -- whichever nnoremap ran last
-" wins the key, and s:setup_jump_maps() used to run after the <Tab>
-" mapping, which is exactly what broke it. So only <C-o> (jump back) is
-" bound in the bex buffer itself; jumping *forward* still works from
-" wherever <C-o> or a file/image open lands you, via the full variant
-" above, just not by pressing <Tab>/<C-i> while sitting in bex.
+" terminal Vim, so if g:bex_key_changes is left at its default '<Tab>',
+" mapping <C-i> here too would silently clobber that binding -- whichever
+" nnoremap runs last wins the key. So only <C-o> (jump back) is bound in
+" the bex buffer itself; jumping *forward* still works from wherever
+" <C-o> or a file/image open lands you, via the full variant above, just
+" not from within bex unless g:bex_key_changes has been rebound away from
+" <Tab>.
 function! s:setup_jump_maps_bex() abort
     nnoremap <buffer> <silent> <C-o> :call bex#JumpBack()<CR>
+endfunction
+
+" (Re)applies the buffer-local navigation mappings using the configured
+" g:bex_key_* variables. Split out of bex#Open() so bex#ReloadKeys() can
+" re-run it on an already-open buffer after the user changes a binding.
+" Explicitly unmaps whatever keys were bound on a *previous* call first --
+" otherwise, e.g., changing g:bex_key_open after bex was already opened
+" once leaves the old key working alongside the new one instead of being
+" replaced by it.
+"
+" g:bex_key_extract is intentionally excluded here -- see s:sync_extract_map().
+function! s:setup_nav_maps() abort
+    for l:old_key in get(b:, 'bex_nav_keys', [])
+        silent! execute 'nunmap <buffer> ' . l:old_key
+    endfor
+
+    let l:bindings = [
+        \ [g:bex_key_hidden,   'bex#ToggleHidden()'],
+        \ [g:bex_key_open,     'bex#OnSelect()'],
+        \ [g:bex_key_up,       'bex#GoUp()'],
+        \ [g:bex_key_changes,  'bex#ToggleChangesView()'],
+        \ [g:bex_key_goto_def, 'bex#GotoDefinition()'],
+        \ ]
+
+    let b:bex_nav_keys = []
+    for [l:key, l:call] in l:bindings
+        execute 'nnoremap <buffer> <silent> ' . l:key . ' :call ' . l:call . '<CR>'
+        call add(b:bex_nav_keys, l:key)
+    endfor
+endfunction
+
+" Binds/unbinds g:bex_key_extract based on whether the buffer is currently
+" showing the changes view. Kept separate from s:setup_nav_maps() (and NOT
+" called from BufEnter's blanket rebind) so that 'e' only ever shadows
+" Vim's normal "end of word" motion while the changes view is actually on
+" screen -- everywhere else in a bex buffer, 'e' behaves exactly like it
+" would in any other Vim buffer. Idempotent: safe to call any time
+" b:bex_changes_view might have changed, or the key itself has.
+function! s:sync_extract_map() abort
+    let l:want = get(b:, 'bex_changes_view', 0)
+    let l:bound_key = get(b:, 'bex_extract_key', '')
+
+    if !empty(l:bound_key) && (!l:want || l:bound_key !=# g:bex_key_extract)
+        silent! execute 'nunmap <buffer> ' . l:bound_key
+        let b:bex_extract_key = ''
+    endif
+
+    if l:want && empty(get(b:, 'bex_extract_key', ''))
+        execute 'nnoremap <buffer> <silent> ' . g:bex_key_extract . ' :call bex#ExtractUnderCursor()<CR>'
+        let b:bex_extract_key = g:bex_key_extract
+    endif
+endfunction
+
+" Same unmap-then-rebind pattern as s:setup_nav_maps(), for the single
+" "return to browsing" key on an image-preview terminal buffer.
+function! s:setup_image_nav_map() abort
+    for l:old_key in get(b:, 'bex_image_nav_keys', [])
+        silent! execute 'nunmap <buffer> ' . l:old_key
+    endfor
+    execute 'nnoremap <buffer> <silent> ' . g:bex_key_up . ' :call bex#ReturnFromImage()<CR>'
+    let b:bex_image_nav_keys = [g:bex_key_up]
+endfunction
+
+" Re-applies buffer-local navigation mappings to every currently open bex
+" buffer and image-preview terminal. Call this after changing any
+" g:bex_key_* variable at runtime for the new binding to take effect
+" without closing and reopening bex.
+function! bex#ReloadKeys() abort
+    let l:orig_win = win_getid()
+    for l:buf in range(1, bufnr('$'))
+        if !bufexists(l:buf) | continue | endif
+        let l:win = bufwinnr(l:buf)
+        if l:win == -1 | continue | endif
+
+        if getbufvar(l:buf, '&filetype') ==# 'bex'
+            execute l:win . 'wincmd w'
+            call s:setup_nav_maps()
+            call s:sync_extract_map()
+        elseif getbufvar(l:buf, '&buftype') ==# 'terminal' && !empty(getbufvar(l:buf, 'bex_image_src', ''))
+            execute l:win . 'wincmd w'
+            call s:setup_image_nav_map()
+        endif
+    endfor
+    call win_gotoid(l:orig_win)
 endfunction
 
 " Records a:entry as the new "current" stop. No-op while a jump traversal
@@ -2040,6 +2161,7 @@ function! bex#SafeRerender() abort
     try
         if get(b:, 'bex_changes_view', 0)
             let b:bex_changes_view = 0
+            call s:sync_extract_map()
             setlocal modifiable
         endif
         setlocal nonumber norelativenumber nowrap noeol nofixeol
