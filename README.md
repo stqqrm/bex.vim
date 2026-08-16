@@ -108,7 +108,7 @@ RETURN
 
 TAB
     Toggle between viewing file system modifications and current directory.
-    Inside interface RETURN can be pressed to revert modifications and E can be used to extract to current directory.
+    Inside interface RETURN to revert modifications and E to extract deleted files to current directory.
 
 .
     Toggle visibility of dotfiles.
