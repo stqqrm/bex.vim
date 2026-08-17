@@ -1,6 +1,8 @@
 " File: autoload/bex.vim
 " Description: ID-Tracked File Browser Engine
 
+let g:bex_modified_indicator = get(g:, 'bex_modified_indicator', 'M')
+
 " --- Global State Initializations ---
 let g:bex_id_counter        = get(g:, 'bex_id_counter', 0)
 let g:bex_cache             = get(g:, 'bex_cache', {})
@@ -1573,24 +1575,46 @@ function! s:position_header_popup() abort
     let l:dotfiles    = g:bex_show_hidden ? 'dotfiles=on' : 'dotfiles=off'
     let l:dotfiles_hl = g:bex_show_hidden ? 'BexDotfilesOn' : 'BexDotfilesOff'
 
-    " '*' is a plain global indicator that *something* is staged somewhere
-    " (any directory), not a per-entry summary -- the full breakdown is one
-    " g:bex_key_changes away in the changes view. Placed immediately left
-    " of the dotfiles indicator, on the right side of the bar.
+    " Configurable global indicator that something is staged somewhere.
     let l:modified = !empty(g:bex_cache)
-    let l:right     = l:modified ? '* ' . l:dotfiles : l:dotfiles
+    let l:modified_indicator = get(g:, 'bex_modified_indicator', '*')
+    let l:right = l:modified
+        \ ? l:modified_indicator . ' ' . l:dotfiles
+        \ : l:dotfiles
 
-    let l:width = max([winwidth(l:winid), strdisplaywidth(l:left) + strdisplaywidth(l:right) + 1])
-    let l:pad   = max([l:width - strdisplaywidth(l:left) - strdisplaywidth(l:right), 1])
-    let l:text  = l:left . repeat(' ', l:pad) . l:right
+    let l:width = max([
+        \ winwidth(l:winid),
+        \ strdisplaywidth(l:left) + strdisplaywidth(l:right) + 1
+        \ ])
+
+    let l:pad = max([
+        \ l:width - strdisplaywidth(l:left) - strdisplaywidth(l:right),
+        \ 1
+        \ ])
+
+    let l:text = l:left . repeat(' ', l:pad) . l:right
 
     let l:right_col = len(l:left) + l:pad + 1
     let l:props = []
+
     if l:modified
-        call add(l:props, {'col': l:right_col, 'length': 1, 'type': 'BexModified'})
-        call add(l:props, {'col': l:right_col + 2, 'length': len(l:dotfiles), 'type': l:dotfiles_hl})
+        call add(l:props, {
+            \ 'col': l:right_col,
+            \ 'length': strchars(l:modified_indicator),
+            \ 'type': 'BexModified'
+            \ })
+
+        call add(l:props, {
+            \ 'col': l:right_col + strchars(l:modified_indicator) + 1,
+            \ 'length': len(l:dotfiles),
+            \ 'type': l:dotfiles_hl
+            \ })
     else
-        call add(l:props, {'col': l:right_col, 'length': len(l:dotfiles), 'type': l:dotfiles_hl})
+        call add(l:props, {
+            \ 'col': l:right_col,
+            \ 'length': len(l:dotfiles),
+            \ 'type': l:dotfiles_hl
+            \ })
     endif
 
     let l:content = [{
