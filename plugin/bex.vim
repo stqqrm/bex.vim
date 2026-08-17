@@ -68,6 +68,31 @@ let g:bex_hi_BexDotfilesOn      = get(g:, 'bex_hi_BexDotfilesOn',      'br_green
 let g:bex_hi_BexDotfilesOff     = get(g:, 'bex_hi_BexDotfilesOff',     'br_red')
 let g:bex_hi_BexModified        = get(g:, 'bex_hi_BexModified',        'br_blue')
 
+let g:bex_gui_black      = get(g:, 'bex_gui_black',      'Black')
+let g:bex_gui_red        = get(g:, 'bex_gui_red',        'Red')
+let g:bex_gui_green      = get(g:, 'bex_gui_green',      'Green')
+let g:bex_gui_yellow     = get(g:, 'bex_gui_yellow',     'Yellow')
+let g:bex_gui_blue       = get(g:, 'bex_gui_blue',       'Blue')
+let g:bex_gui_magenta    = get(g:, 'bex_gui_magenta',    'Magenta')
+let g:bex_gui_cyan       = get(g:, 'bex_gui_cyan',       'Cyan')
+let g:bex_gui_white      = get(g:, 'bex_gui_white',      'LightGray')
+let g:bex_gui_br_black   = get(g:, 'bex_gui_br_black',   'DarkGray')
+let g:bex_gui_br_red     = get(g:, 'bex_gui_br_red',     'LightRed')
+let g:bex_gui_br_green   = get(g:, 'bex_gui_br_green',   'LightGreen')
+let g:bex_gui_br_yellow  = get(g:, 'bex_gui_br_yellow',  'LightYellow')
+let g:bex_gui_br_blue    = get(g:, 'bex_gui_br_blue',    'LightBlue')
+let g:bex_gui_br_magenta = get(g:, 'bex_gui_br_magenta', 'LightMagenta')
+let g:bex_gui_br_cyan    = get(g:, 'bex_gui_br_cyan',    'LightCyan')
+let g:bex_gui_br_white   = get(g:, 'bex_gui_br_white',   'White')
+let s:bex_gui_colors = [
+      \ g:bex_gui_black,      g:bex_gui_red,        g:bex_gui_green,      g:bex_gui_yellow,
+      \ g:bex_gui_blue,       g:bex_gui_magenta,    g:bex_gui_cyan,       g:bex_gui_white,
+      \ g:bex_gui_br_black,   g:bex_gui_br_red,     g:bex_gui_br_green,   g:bex_gui_br_yellow,
+      \ g:bex_gui_br_blue,    g:bex_gui_br_magenta, g:bex_gui_br_cyan,    g:bex_gui_br_white,
+      \ ]
+
+let s:use_gui_colors = has('gui_running')
+
 " 8-color fallback: on terminals reporting &t_Co < 16, fold any bright
 " token (8-15) down to its base 0-7 ANSI color and add 'bold' to keep some
 " visual distinction.
@@ -77,22 +102,24 @@ function! s:bex_hi(group, fg_token) abort
 
     if a:fg_token !=# '' && has_key(s:bex_tokens, a:fg_token)
         let l:fg = s:bex_tokens[a:fg_token]
-
-        let l:cmd .= ' guifg=NONE'
-
+ 
+        let l:cmd .= s:use_gui_colors
+              \ ? (' guifg=' . s:bex_gui_colors[l:fg])
+              \ : ' guifg=NONE'
+ 
         if &t_Co < 16 && l:fg >= 8 && l:fg <= 15
             let l:fg = l:fg - 8
             call add(l:attrs, 'bold')
         endif
-
+ 
         let l:cmd .= ' ctermfg=' . l:fg
     endif
-
+ 
     if !empty(l:attrs)
         let l:cmd .= ' cterm=' . join(l:attrs, ',')
         let l:cmd .= ' gui=' . join(l:attrs, ',')
     endif
-
+ 
     execute l:cmd
 endfunction
 
