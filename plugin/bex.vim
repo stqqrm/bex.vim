@@ -1,3 +1,33 @@
+if !exists('g:bex_disable_netrw')
+    let g:bex_disable_netrw = 1
+endif
+
+if g:bex_disable_netrw
+    " Completely disable Netrw
+    let g:loaded_netrw       = 1
+    let g:loaded_netrwPlugin = 1
+
+    augroup BexCustomExplorer
+        autocmd!
+        autocmd VimEnter * if isdirectory(expand('%:p')) | call s:LoadBexExplorer() | endif
+    augroup END
+
+    function! s:LoadBexExplorer()
+        let l:dir = expand('%:p')
+
+        " Wipe the empty, dummy Netrw/Directory placeholder buffer safely
+        let l:dummy_buf = bufnr('%')
+        setlocal buftype=nofile bufhidden=wipe noswapfile
+
+        execute 'Bex ' . fnameescape(l:dir)
+
+        " Clean up the trailing empty buffer references if needed
+        if bufexists(l:dummy_buf)
+            execute 'bwipeout ' . l:dummy_buf
+        endif
+    endfunction
+endif
+
 augroup bex_plugin
     autocmd!
     autocmd ColorScheme * call s:rerender_if_bex()
