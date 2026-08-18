@@ -66,6 +66,27 @@ let g:bex_hi_BexDotfilesOff     = 'br_red'
 let g:bex_hi_BexModified        = 'br_blue'
 ```
 
+You can change gui colors here for example let g:bex_gui_black = '#000000':
+
+```vim
+let g:bex_gui_black      = 'Black'
+let g:bex_gui_red        = 'Red'
+let g:bex_gui_green      = 'Green'
+let g:bex_gui_yellow     = 'Yellow'
+let g:bex_gui_blue       = 'Blue'
+let g:bex_gui_magenta    = 'Magenta'
+let g:bex_gui_cyan       = 'Cyan'
+let g:bex_gui_white      = 'LightGray'
+let g:bex_gui_br_black   = 'DarkGray'
+let g:bex_gui_br_red     = 'LightRed'
+let g:bex_gui_br_green   = 'LightGreen'
+let g:bex_gui_br_yellow  = 'LightYellow'
+let g:bex_gui_br_blue    = 'LightBlue'
+let g:bex_gui_br_magenta = 'LightMagenta'
+let g:bex_gui_br_cyan    = 'LightCyan'
+let g:bex_gui_br_white   = 'White'
+```
+
 Navigation binds:
 
 ```vim
