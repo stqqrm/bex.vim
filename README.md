@@ -33,6 +33,11 @@ Moving Bex header to top/bottom can be set with:
 let g:bex_header_at_bottom = 1
 ```
 
+Disable netrw:
+```vim
+let g:bex_disable_netrw = 1
+```
+
 To change highlight groups you simply apply a valid token, you can find token list here [Color Tokens](#color-tokens)
 
 ```vim
