@@ -123,6 +123,7 @@ function! bex#Open(path) abort
     call s:sync_extract_map()
     call s:setup_jump_maps_bex()
 
+    call s:setup_syntax()
     call s:render()
 
     augroup bex_events
@@ -134,7 +135,7 @@ function! bex#Open(path) abort
         autocmd BufWinLeave               <buffer> call s:close_header_popup()
         autocmd BufUnload                 <buffer> call s:on_unload() | call s:close_header_popup()
         autocmd QuitPre                   <buffer> call s:on_quit() | call s:close_header_popup()
-        autocmd TextChanged,TextChangedI  <buffer> call s:enforce_spacer() | call s:lock_cursor() | call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props() | call s:position_header_popup()
+        autocmd TextChanged,TextChangedI  <buffer> call s:enforce_spacer() | call s:lock_cursor() | call bex#UpdateVirtualDirectory(b:bex_dir) | call s:reapply_props_line(line('.')) | call s:position_header_popup()
         autocmd CursorMoved,CursorMovedI  <buffer> call s:handle_bounds()
         autocmd ColorScheme               <buffer> call s:reapply_props() | call s:position_header_popup()
         autocmd WinScrolled               <buffer> call s:position_header_popup()
@@ -170,6 +171,7 @@ function! bex#Reload(...) abort
     let g:bex_id_counter = 0
     let g:bex_path_ids   = {}
     let g:bex_cursor_pos = {}
+    let s:bex_stat_cache = {}
 
     let l:dir = ''
     for l:buf in range(1, bufnr('$'))
@@ -1263,6 +1265,20 @@ function! s:render() abort
         let l:is_link = getftype(l:p) ==# 'link'
         let l:link_target = l:is_link ? resolve(l:p) : ''
 
+        " The two candidate display strings depend only on the link's
+        " target and its own directory, neither of which change between
+        " renders -- computed once here rather than by
+        " s:symlink_display_text() on every s:reapply_props() call
+        " (every keystroke). s:relpath() in particular walks both paths
+        " component-by-component; doing that afresh per keystroke for
+        " every visible symlink was a big share of the /bin lag. Only
+        " the final choice between them (which depends on the window's
+        " current width) still happens per call, and that's cheap
+        " strdisplaywidth()/strcharpart() work, no path math.
+        let l:link_full = l:is_link ? '@ → ' . l:link_target : ''
+        let l:link_rel  = l:is_link
+            \ ? '@ → ' . s:relpath(fnamemodify(l:p, ':h'), l:link_target) : ''
+
         " Only '/' is baked into real buffer text -- it's load-bearing
         " (BexDir syntax match, virtual-directory check, dir renaming).
         " The exec/symlink markers are purely informational virtual text
@@ -1271,10 +1287,17 @@ function! s:render() abort
         let l:suffix  = l:is_dir ? '/' : ''
         let l:lines += [l:id . ' ' . l:name . l:suffix]
         let b:bex_snapshot[l:id] = {'name': l:name, 'is_dir': l:is_dir, 'is_exec': l:is_exec,
-            \ 'is_link': l:is_link, 'link_target': l:link_target, 'path': l:p}
+            \ 'is_link': l:is_link, 'link_target': l:link_target, 'path': l:p,
+            \ 'link_full': l:link_full, 'link_rel': l:link_rel}
     endfor
 
     let g:bex_snapshots[b:bex_dir] = copy(b:bex_snapshot)
+
+    " One batched stat(1) call for every not-yet-cached file in this
+    " directory, before s:reapply_props() (which only does dict lookups,
+    " see s:stat_of()) runs below -- see the comment on s:bex_stat_cache
+    " for why this must stay batched rather than per-file.
+    call s:populate_stat_cache(map(values(copy(b:bex_snapshot)), 'v:val.path'))
 
     silent %delete _
     if g:bex_header_at_bottom
@@ -1646,35 +1669,360 @@ function! s:position_header_popup() abort
     endif
 endfunction
 
+" ls(1)-style leading type character for an entry: 'd' for directories,
+" 'l' for symlinks, '-' for regular files. getfperm() only ever returns
+" the 9-character rwx string ('rwxr-xr-x') and never this leading
+" character, so it has to be derived separately from what s:render()
+" already recorded about the entry (is_dir/is_link) rather than
+" re-parsed out of getfperm()'s output.
+function! s:file_type_char(item) abort
+    if get(a:item, 'is_link', 0) | return 'l' | endif
+    return a:item.is_dir ? 'd' : '-'
+endfunction
+
+" Best-effort per-file stat info (owner/group, permission string, size,
+" mtime), cached per path for the lifetime of the process. Reads only
+" ever hit this dict lookup -- s:populate_stat_cache() below is what
+" actually shells out, and it does so once per directory render, not
+" once per file, per field. (An earlier version of this cache covered
+" only owner/group; permissions/size/mtime were instead re-fetched via
+" getfperm()/getfsize()/getftime() directly inside s:reapply_props() on
+" every call -- and that function is wired to TextChanged/TextChangedI,
+" i.e. every keystroke. In a directory the size of /bin that meant
+" several thousand blocking stat(2) syscalls per keystroke. Folding
+" those fields into this same batched, cached lookup collapses all of
+" it back down to dict lookups + string formatting on every call after
+" the first, with real syscalls happening only once per directory
+" entered. See the historical note below on why the *shelling out*
+" itself has to stay batched into one process, not one per file.)
+let s:bex_stat_cache = {}
+
+" Populates the cache for every path in a:paths with one stat(1)
+" invocation instead of one per path. Call this once after building a
+" fresh directory snapshot (see s:render()) -- NOT from inside
+" s:reapply_props(), which runs on every keystroke and must stay to pure
+" dict lookups. (An earlier version shelled out to stat(1) once per
+" file, on cache miss, directly from s:reapply_props(). Since that
+" function runs immediately on entering a directory and touches every
+" visible line, that meant one blocking subprocess spawn per file, back
+" to back -- easily hundreds of ms for a sizeable listing. Typing
+" (including pressing Escape) during that window queued up keystrokes
+" faster than Vim's blocked main loop could read them, and the
+" terminal's escape-sequence detection lost the race, landing literal
+" ^[ bytes in the buffer instead of recognizing them as the Escape key.
+" Batching collapses that into a single spawn per directory entered.)
+function! s:populate_stat_cache(paths) abort
+    let l:missing = filter(copy(a:paths), '!has_key(s:bex_stat_cache, v:val)')
+    if empty(l:missing) | return | endif
+
+    if executable('stat')
+        " Format string built with REAL tab bytes, not the two characters
+        " '\' 't' -- this stat build does not interpret backslash escapes
+        " in -c format strings itself (verified: `stat -c '%n\t%U %G'`
+        " emits the literal chars `\t`, not a tab), so asking it to do
+        " that expansion silently produced a format string with no
+        " delimiter at all, which made every line fail the field split
+        " below and get memoized as empty. Embedding "\t" here is Vim's
+        " own double-quoted-string escape, evaluated before the shell
+        " ever sees it, so it's delimiter-agnostic with respect to
+        " whatever stat implementation is on PATH.
+        "
+        " Fields: name, owner+group, type+perm string (ls -l style,
+        " already includes the leading d/l/- type char so no separate
+        " s:file_type_char() call is needed at use sites), hard-link
+        " count, size in bytes, mtime as epoch seconds (kept raw --
+        " s:relative_time() formatting is cheap pure arithmetic, so
+        " it's still computed fresh on every render/reapply call
+        " without needing a syscall).
+        let l:tab = "\t"
+        let l:cmd = 'stat -c ' . shellescape(join(['%n', '%U %G', '%A', '%h', '%s', '%Y'], l:tab)) . ' '
+            \ . join(map(copy(l:missing), 'shellescape(v:val)'), ' ')
+        let l:out = system(l:cmd)
+
+        if v:shell_error == 0
+            for l:line in split(l:out, "\n")
+                let l:parts = split(l:line, l:tab, 1)
+                if len(l:parts) == 6
+                    let s:bex_stat_cache[l:parts[0]] = {
+                        \ 'owner': l:parts[1], 'perm': l:parts[2], 'nlink': l:parts[3],
+                        \ 'size': str2nr(l:parts[4]), 'mtime': str2nr(l:parts[5])
+                        \ }
+                endif
+            endfor
+        endif
+    endif
+
+    " Anything stat still couldn't resolve (stat(1) missing entirely, a
+    " broken symlink target, permission denied on some network
+    " filesystem, a path stat(1) balked at) falls back to Vim's own
+    " builtins. Still only once per path per render, not once per
+    " keystroke, since this whole function is only called from
+    " s:render(). There's no Vim builtin for hard-link count, so that
+    " field is simply left blank rather than guessed at.
+    for l:path in l:missing
+        if has_key(s:bex_stat_cache, l:path) | continue | endif
+        let l:type_char = getftype(l:path) ==# 'link' ? 'l' : (isdirectory(l:path) ? 'd' : '-')
+        let s:bex_stat_cache[l:path] = {
+            \ 'owner': '', 'perm': l:type_char . getfperm(l:path), 'nlink': '',
+            \ 'size': getfsize(l:path), 'mtime': getftime(l:path)
+            \ }
+    endfor
+endfunction
+
+function! s:stat_of(path) abort
+    return get(s:bex_stat_cache, a:path, {'owner': '', 'perm': '', 'nlink': '', 'size': 0, 'mtime': 0})
+endfunction
+
+" Shortest relative path from a:from_dir to a:to_path, walking up with
+" '../' only as far as their common ancestor. Same-directory links (the
+" common case for things like /usr/bin/foo -> /usr/bin/bar) collapse to
+" './bar' rather than repeating the full absolute prefix twice on one line.
+function! s:relpath(from_dir, to_path) abort
+    let l:from = split(fnamemodify(a:from_dir, ':p'), '/')
+    let l:to   = split(fnamemodify(a:to_path, ':p'), '/')
+
+    let l:i = 0
+    while l:i < len(l:from) && l:i < len(l:to) && l:from[l:i] ==# l:to[l:i]
+        let l:i += 1
+    endwhile
+
+    let l:up   = repeat('../', len(l:from) - l:i)
+    let l:down = join(l:to[l:i :], '/')
+    let l:rel  = l:up . l:down
+
+    if empty(l:rel) | let l:rel = '.' | endif
+    if l:rel !~# '^\.\./' && l:rel !~# '^/'
+        let l:rel = './' . l:rel
+    endif
+    return l:rel
+endfunction
+
+" Absolute target if it fits in a:avail columns; otherwise the relative
+" form if *that* fits; otherwise a best-effort truncation (with a
+" trailing ellipsis) of whichever of the two is shorter, clipped to
+" a:avail. Only returns '' when there's no room at all (a:avail <= 1) --
+" the marker should always show *something* rather than vanish just
+" because the window got narrow.
+function! s:symlink_display_text(item, avail) abort
+    if a:avail <= 1
+        return ''
+    endif
+
+    " Both candidates are precomputed once in s:render() (see
+    " b:bex_snapshot's link_full/link_rel) -- this only measures and
+    " picks, no path-walking here.
+    let l:full = a:item.link_full
+    if strdisplaywidth(l:full) <= a:avail
+        return l:full
+    endif
+
+    let l:rel = a:item.link_rel
+    if strdisplaywidth(l:rel) <= a:avail
+        return l:rel
+    endif
+
+    " Neither form fits -- shrink the shorter of the two down to the
+    " available width with a trailing ellipsis, character-safe via
+    " strcharpart so multibyte target paths don't get cut mid-codepoint.
+    let l:best = strdisplaywidth(l:rel) <= strdisplaywidth(l:full) ? l:rel : l:full
+    return strcharpart(l:best, 0, a:avail - 1) . '…'
+endfunction
+
 function! s:reapply_props() abort
     if get(b:, 'bex_changes_view', 0) | return | endif
 
     if empty(prop_type_get('bex_info')) | call prop_type_add('bex_info', {'highlight': 'BexInfo'}) | endif
     if empty(prop_type_get('bex_exec_marker')) | call prop_type_add('bex_exec_marker', {'highlight': 'BexExec'}) | endif
     if empty(prop_type_get('bex_symlink_marker')) | call prop_type_add('bex_symlink_marker', {'highlight': 'BexSymlink'}) | endif
+    if empty(prop_type_get('bex_symlink_gap')) | call prop_type_add('bex_symlink_gap', {'highlight': 'BexInfo'}) | endif
 
     call prop_clear(1, line('$'))
+
+    " Two passes, like ls -l's own column sizing: a fixed printf width
+    " (the previous approach) pads every row out to the width of the
+    " longest value it could ever see, so a directory of short "root
+    " root" owners still carried a wide fixed gap before the size
+    " column. Instead, gather each row's fields first, measure the
+    " longest actual value per column *in this listing*, then pad every
+    " row to just that -- same idea as `column -t`.
+    let l:rows = []
+    let l:w_perm = 0
+    let l:w_nlink = 0
+    let l:w_owner = 0
+    let l:w_size = 0
+    let l:w_time = 0
 
     for l:lnum in range(s:content_start(), s:content_end())
         let l:id = matchstr(getline(l:lnum), '^\/[0-9a-zA-Z]\{4}')
         if empty(l:id) || !has_key(b:bex_snapshot, l:id) | continue | endif
         let l:item = b:bex_snapshot[l:id]
         let l:p = l:item.path
-        let l:size = l:item.is_dir ? '' : s:human_size(getfsize(l:p))
-        let l:info = printf('%-10s %8s %10s', getfperm(l:p), l:size, s:relative_time(getftime(l:p)))
-        call prop_add(l:lnum, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
 
-        " Purely informational virtual text, same reasoning as the '/'
-        " comment in s:render() -- never part of the real buffer line.
-        let l:col = len(getline(l:lnum)) + 1
-        if l:item.is_exec
-            call prop_add(l:lnum, l:col, {'type': 'bex_exec_marker', 'text': '*'})
-        endif
-        if get(l:item, 'is_link', 0)
-            call prop_add(l:lnum, l:col, {'type': 'bex_symlink_marker', 'text': '@ -> ' . l:item.link_target})
-        endif
+        " Pure dict lookup + cheap formatting -- no syscalls here. The
+        " actual stat(2) work happened once, batched, in s:render()'s
+        " call to s:populate_stat_cache(). See the comment on
+        " s:bex_stat_cache for why this matters: this loop runs on every
+        " keystroke via TextChanged/TextChangedI.
+        let l:st = s:stat_of(l:p)
+        let l:perm = l:st.perm
+        let l:nlink = l:st.nlink
+        let l:owner = l:st.owner
+        let l:size = l:item.is_dir ? '' : s:human_size(l:st.size)
+        let l:time = s:relative_time(l:st.mtime)
+
+        call add(l:rows, {'lnum': l:lnum, 'id': l:id, 'perm': l:perm, 'nlink': l:nlink,
+            \ 'owner': l:owner, 'size': l:size, 'time': l:time})
+
+        let l:w_perm  = max([l:w_perm,  strdisplaywidth(l:perm)])
+        let l:w_nlink = max([l:w_nlink, strdisplaywidth(l:nlink)])
+        let l:w_owner = max([l:w_owner, strdisplaywidth(l:owner)])
+        let l:w_size  = max([l:w_size,  strdisplaywidth(l:size)])
+        let l:w_time  = max([l:w_time,  strdisplaywidth(l:time)])
     endfor
 
+    " Column order: [type+perms] [hard-link count] [owner group] [size]
+    " [mtime] -- same order ls -l uses. Each column is only as wide as
+    " its own longest value in this listing, so e.g. "root root" no
+    " longer drags a gap in behind it just because some *other*
+    " directory might have a longer owner name. nlink is right-aligned
+    " like size/time since it's numeric, not left-aligned like perm/owner.
+    let l:fmt = '%-' . l:w_perm . 's %' . l:w_nlink . 's %-' . l:w_owner . 's %' . l:w_size . 's %' . l:w_time . 's'
+    let l:info_width = l:w_perm + 1 + l:w_nlink + 1 + l:w_owner + 1 + l:w_size + 1 + l:w_time
+    let l:gap_width = 2
+    let l:winw = winwidth(0)
+
+    " Cached so s:reapply_props_line() (the cheap per-keystroke path, see
+    " below) can lay out a single edited line correctly without redoing
+    " this two-pass column-width scan over the whole buffer. Column
+    " widths only actually change when the *set* of visible entries
+    " changes -- a fresh s:render(), toggling dotfiles, a window resize --
+    " never from editing text in place, so reusing the last full pass's
+    " widths for a same-listing single-line refresh is always correct.
+    let b:bex_col_widths = {'fmt': l:fmt, 'info_width': l:info_width, 'gap_width': l:gap_width}
+
+    for l:row in l:rows
+        call s:render_row_props(l:row.lnum, b:bex_snapshot[l:row.id], l:row, l:fmt, l:info_width, l:gap_width, l:winw)
+    endfor
+endfunction
+
+" One row's virtual text (info column + exec/symlink markers), factored
+" out of s:reapply_props()'s main loop so s:reapply_props_line() can
+" reuse it for a single line without re-deriving column widths.
+"
+" The info column is added via Vim's own 'text_align': 'right' rather
+" than by hand-padding it into place after the real text. An earlier
+" version of this function computed the padding itself (winw - used -
+" strdisplaywidth(info), clamped at 0) and appended info directly after
+" whatever else was on the line. That failed for any row whose real
+" filename plus exec marker was already close to the window width (long
+" names, narrow windows, nothing to do with symlinks at all): the clamp
+" hit 0, the info text got appended anyway, and since 'nowrap' doesn't
+" reflow overflowing content, Vim simply clipped whatever fell past the
+" right edge -- which is the *tail* of the info text (permissions/
+" owner/size/mtime), silently dropping trailing characters. Vim's own
+" 'text_align': 'right' box doesn't have that failure mode: it always
+" renders its own text in full at the window's right edge, overlapping
+" earlier real/virtual content instead of truncating itself when things
+" don't fit. That's the correct trade-off here -- the stat info should
+" never silently lose characters; an overlong filename encroaching on
+" it is the lesser problem.
+function! s:render_row_props(lnum, item, row, fmt, info_width, gap_width, winw) abort
+    let l:info = printf(a:fmt, a:row.perm, a:row.nlink, a:row.owner, a:row.size, a:row.time)
+    call prop_add(a:lnum, 0, {'type': 'bex_info', 'text': l:info, 'text_align': 'right'})
+
+    " Purely informational virtual text, same reasoning as the '/'
+    " comment in s:render() -- never part of the real buffer line.
+    let l:col = len(getline(a:lnum)) + 1
+    let l:used = l:col - 1
+
+    if a:item.is_exec
+        call prop_add(a:lnum, l:col, {'type': 'bex_exec_marker', 'text': '*'})
+        let l:used += 1
+    endif
+
+    if get(a:item, 'is_link', 0)
+        " Budget = window width minus what's already on the line minus
+        " the right-aligned info column minus a small reserved gap,
+        " with one extra column of slack folded in (see l:margin)
+        " specifically because this marker's text can contain the
+        " multibyte arrow/ellipsis characters -- if Vim's own width
+        " accounting for the 'right'-aligned info box ever comes out a
+        " column or two off on a line with multibyte virtual text
+        " immediately before it, this margin keeps the symlink text
+        " from butting right up against that boundary, rather than
+        " trying to guess Vim's internal math exactly.
+        " s:symlink_display_text() shrinks to a relative target first,
+        " then falls back to a best-effort ellipsis truncation if even
+        " that doesn't fit -- it only returns '' when there's no room
+        " at all.
+        let l:margin = 2
+        let l:avail = a:winw - l:used - a:info_width - a:gap_width - l:margin
+        let l:link_text = s:symlink_display_text(a:item, l:avail)
+        if !empty(l:link_text)
+            call prop_add(a:lnum, l:col, {'type': 'bex_symlink_marker', 'text': l:link_text})
+            " Own prop/cell rather than folding these spaces into
+            " link_text -- keeps the gap independently styleable
+            " (e.g. a future separator glyph) without touching the
+            " shrink logic above.
+            call prop_add(a:lnum, l:col, {'type': 'bex_symlink_gap', 'text': repeat(' ', a:gap_width)})
+        endif
+    endif
+endfunction
+
+" Cheap per-keystroke path for TextChanged/TextChangedI: a plain edit
+" (renaming an entry) changes at most the current line's length, which
+" only affects where *that* line's own exec/symlink virtual text docks --
+" it can never change any other row's stat data or the shared column
+" widths. Refreshing just this one line instead of looping over every
+" line in the buffer (what s:reapply_props() does) is what actually
+" closes the gap between a near-empty directory and something like /bin:
+" without this, every keystroke re-walked and re-propped the entire
+" listing regardless of how many lines actually needed it.
+"
+" Falls back to a full s:reapply_props() if there's no cached column
+" layout yet (e.g. right after :edit reopening an old buffer).
+function! s:reapply_props_line(lnum) abort
+    if !exists('b:bex_col_widths')
+        call s:reapply_props()
+        return
+    endif
+
+    " Cleared unconditionally, before checking whether the id still
+    " resolves: if the id was edited into something invalid (a
+    " character deleted from it, or changed to one that doesn't match
+    " any tracked entry), this line's stale perm/owner/size/mtime
+    " virtual text -- describing whatever file the id *used* to point
+    " to -- must not keep showing, since it no longer corresponds to
+    " what's actually on the line. Returning early below (nothing left
+    " to add) then just leaves the line with no info, which is correct;
+    " once the id is edited back to something valid, the next keystroke
+    " calls this again and re-renders it from the snapshot as normal.
+    call prop_clear(a:lnum, a:lnum)
+
+    let l:id = matchstr(getline(a:lnum), '^\/[0-9a-zA-Z]\{4}')
+    if empty(l:id) || !has_key(b:bex_snapshot, l:id) | return | endif
+    let l:item = b:bex_snapshot[l:id]
+    let l:st = s:stat_of(l:item.path)
+    let l:row = {
+        \ 'perm': l:st.perm, 'nlink': l:st.nlink, 'owner': l:st.owner,
+        \ 'size': l:item.is_dir ? '' : s:human_size(l:st.size),
+        \ 'time': s:relative_time(l:st.mtime)
+        \ }
+
+    call s:render_row_props(a:lnum, l:item, l:row, b:bex_col_widths.fmt,
+        \ b:bex_col_widths.info_width, b:bex_col_widths.gap_width, winwidth(0))
+endfunction
+
+" Static structural syntax rules -- these never depend on directory
+" content, so they only need to be declared once per buffer, not on
+" every s:reapply_props() call. They used to live at the end of
+" s:reapply_props() itself, which meant Vim re-registered the same
+" seven :syntax match patterns on every single keystroke via
+" TextChanged/TextChangedI, on top of the per-row work. Colors/highlight
+" groups are defined separately (see bex#RedefineHighlights() in
+" plugin/bex.vim), so a ColorScheme change doesn't need these
+" re-declared either -- only a fresh buffer does.
+function! s:setup_syntax() abort
     syntax clear
     syntax match BexDir        /\%(\/[0-9a-zA-Z]\+\s\+\|\s*\)\zs[^/].\+\/$/
     syntax match BexDir        /\zs\S\+\/$/
@@ -2204,16 +2552,28 @@ function! bex#SafeRerender() abort
             setlocal modifiable
         endif
         setlocal nonumber norelativenumber nowrap noeol nofixeol
+        call s:setup_syntax()
         call s:reapply_props()
         call s:render()
     catch
     endtry
 endfunction
 
+" Runs on every cursor move, including pure navigation (j/k, arrow
+" repeat) with no text changed at all -- so it must stay cheap.
+" bex#UpdateVirtualDirectory() used to be called from here too, but that
+" runs s:QueryBuffer(), which does several regex-driven passes over
+" *every* line in the buffer to detect renames/deletes/moves. In a
+" directory the size of /bin, holding a movement key re-ran that
+" thousands-of-lines scan many times a second even though nothing had
+" been edited -- by far the biggest remaining source of lag, worse than
+" any per-file stat cost. Actual edits still get diffed promptly via the
+" TextChanged/TextChangedI autocmd, which already calls
+" bex#UpdateVirtualDirectory() itself; pure cursor movement has nothing
+" new to diff and doesn't need to trigger it again here.
 function! s:handle_bounds() abort
     if get(b:, 'bex_changes_view', 0) | return | endif
     call s:lock_cursor()
-    call bex#UpdateVirtualDirectory(b:bex_dir)
     call s:position_header_popup()
 endfunction
 
