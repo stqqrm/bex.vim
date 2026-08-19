@@ -3,7 +3,6 @@ if !exists('g:bex_disable_netrw')
 endif
 
 if g:bex_disable_netrw
-    " Completely disable Netrw
     let g:loaded_netrw       = 1
     let g:loaded_netrwPlugin = 1
 
