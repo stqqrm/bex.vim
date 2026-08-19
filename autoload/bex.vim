@@ -1,4 +1,4 @@
-" File: autoload/bex.vim
+" autoload/bex.vim
 " Description: ID-Tracked File Browser Engine
 
 let g:bex_modified_indicator = get(g:, 'bex_modified_indicator', 'M')
